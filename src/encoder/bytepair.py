@@ -70,7 +70,7 @@ class Encoder:
 		)
 
 		# split the text up into text chunks
-		text_chunks = regex.findall(self.compiled_pattern, text if text_range < 0 else text[:text_range])
+		text_chunks = regex.findall(self.compiled_pattern, text if text_range is None else text[:text_range])
 		del text
 
 		print(f"encoding text chunks... {Fore.BLACK}{Style.BRIGHT}(takes a ~minute)")
