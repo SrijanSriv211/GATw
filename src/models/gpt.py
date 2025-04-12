@@ -5,7 +5,7 @@
 from colorama import Style, Fore, init
 from torch.nn import functional as F
 from dataclasses import dataclass
-import torch.nn as nn, torch.amp, torch, inspect, math
+import torch.nn as nn, torch, inspect, math
 
 init(autoreset=True)
 
