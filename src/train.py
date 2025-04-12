@@ -285,7 +285,7 @@ while training_loop:
 				os.mkdir(CONFIG["checkpoints"]["path"])
 
 			print(f"saved checkpoint at step {Fore.WHITE}{Style.BRIGHT}{iter_num}")
-			torch.save(get_trained_model(model, optimizer), f"{CONFIG["checkpoints"]["path"]}\\step{iter_num}.bin")
+			torch.save(get_trained_model(model, optimizer), f"{CONFIG["checkpoints"]["path"]}\\s{iter_num}.bin")
 
 		# forward backward update, with optional gradient accumulation to simulate larger batch size
 		# and using the GradScaler if data type is float16
@@ -323,7 +323,7 @@ while training_loop:
 
 			if local_iter_num >= 5: # let the training loop settle a bit
 				mfu = model.estimate_mfu(CONFIG["batch_size"] * CONFIG["gradient_accumulation_steps"], dt)
-				running_mfu = mfu if running_mfu == -1.0 else 0.9*running_mfu + 0.1*mfu
+				running_mfu = mfu if running_mfu == -1.0 else 0.9 * running_mfu + 0.1 * mfu
 
 			print(
 				f"{Fore.WHITE}{Style.BRIGHT}iter",
@@ -372,7 +372,7 @@ while training_loop:
 			elif inp == "r":
 				print(f"{Fore.YELLOW}{Style.BRIGHT}config.json{Style.RESET_ALL} reloaded.")
 				with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-					CONFIG = json.load(f)["GPT"]
+					CONFIG = json.load(f)
 
 			else:
 				print(f"{Fore.RED}{Style.DIM}Wrong option.")
