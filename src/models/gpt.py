@@ -63,9 +63,9 @@ class CausalSelfAttention(nn.Module):
 class MLP(nn.Module):
     def __init__(self, config):
         super().__init__()
-        self.c_fc    = nn.Linear(config.n_embd, 4 * config.n_embd, bias=False)
+        self.c_fc    = nn.Linear(config.n_embd, config.n_hidden, bias=False)
         self.gelu    = nn.GELU()
-        self.c_proj  = nn.Linear(4 * config.n_embd, config.n_embd, bias=False)
+        self.c_proj  = nn.Linear(config.n_hidden, config.n_embd, bias=False)
         self.dropout = nn.Dropout(config.dropout)
 
     def forward(self, x):
@@ -95,6 +95,7 @@ class GPTConfig:
     n_layer: int = 4
     n_head: int = 4
     n_embd: int = 32
+    n_hidden: int = 32 * 4 # feedforward hidden size. Typically is set to `4 * n_embd`
     dropout: float = 0.0
     bias: bool = False # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
 
