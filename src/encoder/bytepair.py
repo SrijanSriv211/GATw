@@ -155,50 +155,43 @@ class Encoder:
 	# return the token ids
 	# https://github.com/karpathy/minbpe/pull/84/files#diff-6b5737d60acbc8d11dba46334d76c559796c1aca8d51e13ed069236f947b9e1f
 	def _encode_chunk(self, text_bytes, inverse_vocab):
-		n = len(text_bytes)
-		dp = [float("inf") for _ in range(n)]
-		backtrack = [[-1] * n for _ in range(n)]
+		ids = list(text_bytes)
+		if len(ids) < 2:
+			return ids
 
-		# at i'th iteration, dp[j] is the size of optimal tokenization of text_bytes[:j+1], for 0 < j < i-1, and
-		# backtrack[j] is the index of the first byte of the last token of an optimal tokenization.
-		for i in range(0, n):
-			if text_bytes[:i+1] in inverse_vocab:
-				dp[i] = 1
-				backtrack[i] = 0
-				continue
-			for j in range(1, i+1):
-				if text_bytes[j:i+1] in inverse_vocab:
-					assert dp[j-1] >= 1
-					if dp[i] > dp[j-1] + 1:
-						dp[i] = dp[j-1] + 1
-						backtrack[i] = j
+		first, last = 0, 2
 
-		# reconstruct the tokens from the backtrack table
-		def reconstruct_tokens(i):
-			if backtrack[i] == 0:
-				return [text_bytes[:i+1]]
-			k = backtrack[i]
-			return reconstruct_tokens(k-1) + [text_bytes[k:i+1]]
+		while first <= len(ids):
+			if len(ids[first:last]) < 2:
+				break
 
-		return [inverse_vocab[token] for token in reconstruct_tokens(n - 1)]
+			i0 = ids[first:last][0]
+			i1 = ids[first:last][1]
+
+			if self.vocab[i0] + self.vocab[i1] in inverse_vocab.keys():
+				ids[first:last] = [inverse_vocab[self.vocab[i0] + self.vocab[i1]]]
+				first, last = 0, 2
+
+			else:
+				first += 1
+				last += 1
+
+		return ids
 
 	def encode_ordinary(self, text, inverse_vocab):
 		"""Encoding that ignores any special tokens."""
-		cache = {}
-
 		# split text into chunks of text by categories defined in regex pattern
 		text_chunks = regex.findall(self.compiled_pattern, text)
 
 		# all chunks of text are encoded separately, then results are joined
 		ids = []
 		for chunk in text_chunks:
-			if chunk not in cache:
-				chunk_bytes = chunk.encode("utf-8")  # raw bytes
-				cache[chunk] = self._encode_chunk(chunk_bytes, inverse_vocab)
-			ids.extend(cache[chunk])
+			chunk_bytes = chunk.encode("utf-8") # raw bytes
+			chunk_ids = self._encode_chunk(chunk_bytes, inverse_vocab)
+			ids.extend(chunk_ids)
 		return ids
 
-	def encode(self, text, allowed_special="none_raise"):
+	def encode(self, str, isfile=False, allowed_special="none_raise"):
 		"""
 		Unlike encode_ordinary, this function handles special tokens.
 		allowed_special: can be "all"|"none"|"none_raise" or a custom set of special tokens
@@ -206,6 +199,11 @@ class Encoder:
 		this is the default tiktoken behavior right now as well
 		any other behavior is either annoying, or a major footgun
 		"""
+		text = str
+		if isfile:
+			with open(str, "r", encoding="utf-8") as f:
+				text = f.read()
+
 		# decode the user desire w.r.t. handling of special tokens
 		special = None
 		if allowed_special == "all":
@@ -236,7 +234,8 @@ class Encoder:
 		# makes it into a capturing group, so the special tokens will be included
 		special_pattern = "(" + "|".join(regex.escape(k) for k in special) + ")"
 		special_chunks = regex.split(special_pattern, text)
-	
+		del text
+
 		# now all the special characters are separated from the rest of the text
 		# all chunks of text are encoded separately, then results are joined
 		ids = []
