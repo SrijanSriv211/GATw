@@ -2,6 +2,8 @@ from shared.utils import calc_total_time
 from colorama import init, Fore, Style
 import pickle, regex, time
 
+init(autoreset=True)
+
 class Encoder:
 	def __init__(self):
 		"""
