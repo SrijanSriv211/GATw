@@ -230,6 +230,31 @@ def get_lr(it):
     coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio)) # coeff ranges 0..1
     return CONFIG["min_lr"] + coeff * (CONFIG["learning_rate"] - CONFIG["min_lr"])
 
+# https://medium.com/biased-algorithms/a-practical-guide-to-implementing-early-stopping-in-pytorch-for-model-training-99a7cbd46e9d
+class adaptive_early_stopping:
+    def __init__(self, base_patience=5, delta=0.01):
+        self.base_patience = base_patience
+        self.delta = delta
+        self.wait_count = 0
+        self.best_score = None
+        self.dynamic_patience = self.base_patience
+
+    def step(self, val_loss):
+        if self.best_score is None or val_loss < self.best_score - self.delta:
+            self.best_score = val_loss
+            self.wait_count = 0
+            self.dynamic_patience = self.base_patience # reset to base
+
+        else:
+            self.wait_count += 1
+            # adjust patience if improvement is near
+            if self.wait_count >= (self.base_patience * 0.8):
+                self.dynamic_patience += 1
+
+            if self.wait_count >= self.dynamic_patience:
+                return True # signal to stop training
+        return False
+
 # report number of parameters
 print(f"{Fore.WHITE}{Style.BRIGHT}{model.get_num_params()/1e6}M", "parameters")
 
@@ -252,6 +277,7 @@ t0 = time.time()
 local_iter_num = 0 # number of iterations in the lifetime of this process
 running_mfu = -1.0 if metrics["mfu"] == [] else metrics["mfu"][-1]
 training_loop = True
+stop_early = adaptive_early_stopping()
 
 while training_loop:
 	try:
@@ -284,6 +310,11 @@ while training_loop:
 
 			metrics["train"].append(losses["train"])
 			metrics["val"].append(losses["val"])
+
+			if stop_early.step(losses["val"]):
+				print(f"{Fore.RED}{Style.BRIGHT}early stopping.")
+				training_loop = False
+				break
 
 		# save checkpoint
 		if CONFIG["checkpoints"] != None and iter_num > 0 and iter_num % CONFIG["checkpoints"]["interval"] == 0:
