@@ -96,6 +96,8 @@ class GPTConfig:
     n_head: int = 4
     n_embd: int = 32
     n_hidden: int = 32 * 4 # feedforward hidden size. Typically is set to `4 * n_embd`
+    beta1: float = 0.9
+    beta2: float = 0.95
     dropout: float = 0.0
     bias: bool = False # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
 
@@ -220,7 +222,7 @@ class GPT(nn.Module):
         use_fused = fused_available and device_type == 'cuda'
         color = f"{Fore.LIGHTGREEN_EX}{Style.BRIGHT}" if use_fused == True else f"{Fore.LIGHTRED_EX}{Style.BRIGHT}"
         print(f"Using fused AdamW: {color}{use_fused}")
-        optimizer = torch.optim.AdamW(optim_groups, lr=learning_rate, betas=(0.9, 0.95), fused=use_fused)
+        optimizer = torch.optim.AdamW(optim_groups, lr=learning_rate, betas=(self.config.beta1, self.config.beta2), fused=use_fused)
         return optimizer
 
     def estimate_mfu(self, fwdbwd_per_iter, dt):
