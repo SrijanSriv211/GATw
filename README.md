@@ -3,7 +3,7 @@ A super small and simple language model
 
 This is how `config.json` should look-like
 
-```
+```json
 {
 	"load_from_file": true,
 	"train_data": "bin\\train.bin",
