@@ -1,7 +1,8 @@
-from shared.utils import calc_total_time
+from shared.utils import calc_total_time, kprint
 from models.gpt import GPTConfig, GPT
 from colorama import Style, Fore, init
 from contextlib import nullcontext
+from pathlib import Path
 import warnings, pickle, random, time, math, os
 import torch._inductor.config as config
 import torch.amp, torch, json, sys
@@ -16,13 +17,18 @@ import torch.amp, torch, json, sys
 # We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file.
 # Please open an issue on GitHub for any issues related to this experimental feature.
 warnings.filterwarnings("ignore", category=FutureWarning)
-
 init(autoreset=True)
 
 CONFIG_PATH = sys.argv[1] if len(sys.argv) > 1 else "scripts\\config.json"
 with open(CONFIG_PATH, "r", encoding="utf-8") as f:
 	CONFIG = json.load(f)
+SAVE_PATH = Path(CONFIG["save_path"])
+TXT_SAVE_PATH = list(SAVE_PATH.parts)
+TXT_SAVE_PATH[-1] = SAVE_PATH.stem
+TXT_SAVE_PATH = "\\".join(TXT_SAVE_PATH) + ".txt"
+kprint(f"{Fore.WHITE}{Style.DIM}```config.json\n{json.dumps(CONFIG, indent=4)}\n```", filename=TXT_SAVE_PATH)
 
+# set device
 device = ("cuda" if torch.cuda.is_available() else "cpu") if CONFIG["device"] == "auto" else CONFIG["device"]
 
 # init seed
@@ -36,7 +42,7 @@ ptdtype = {"float32": torch.float32, "bfloat16": torch.bfloat16, "float16": torc
 ctx = nullcontext() if device == "cpu" else torch.amp.autocast(device_type=device, dtype=ptdtype)
 
 # print the device
-print("Training on", f"{Fore.YELLOW}{Style.BRIGHT}{device}", f"{Fore.WHITE}{Style.BRIGHT}({torch.initial_seed()})")
+kprint("Training on", f"{Fore.YELLOW}{Style.BRIGHT}{device}", f"{Fore.WHITE}{Style.BRIGHT}({torch.initial_seed()})", filename=TXT_SAVE_PATH)
 
 def from_scratch():
 	hyperparams = dict(dropout=CONFIG["dropout"])
@@ -78,7 +84,6 @@ def from_pretrained(checkpoint):
 	}
 
 	# load the state dict and current iteration number of the model
-	state_dict = checkpoint["model"]
 	iter_num = checkpoint["iter_num"] + 1
 	best_loss = checkpoint["best_loss"] if "best_loss" in checkpoint.keys() else 0
 
@@ -141,22 +146,21 @@ else:
 	for i in os.listdir(CONFIG["train_data"]):
 		# try to load and check all the data
 		with open(f"{CONFIG["train_data"]}\\{i}", "rb") as f:
-			print(train_data_len)
 			train_data_len += len(pickle.load(f))
 
 	for i in os.listdir(CONFIG["val_data"]):
 		with open(f"{CONFIG["val_data"]}\\{i}", "rb") as f:
-			print(val_data_len)
 			val_data_len += len(pickle.load(f))
 
 data_len = train_data_len + val_data_len
 
 # print the number of tokens
-print(f"{Fore.WHITE}{Style.BRIGHT}{(data_len/1e6)}M", "total tokens")
-print(
+kprint(f"{Fore.WHITE}{Style.BRIGHT}{(data_len/1e6)}M", "total tokens", filename=TXT_SAVE_PATH)
+kprint(
 	f"{Fore.WHITE}{Style.BRIGHT}{(train_data_len/1e6)}M", "train tokens,",
 	f"{Fore.WHITE}{Style.BRIGHT}{(val_data_len/1e6)}M", "test tokens",
-	f"   {Fore.WHITE}{Style.DIM}(Using train tokens as test tokens)" if train_data_len == val_data_len else ""
+	f"   {Fore.WHITE}{Style.DIM}(Using train tokens as test tokens)" if train_data_len == val_data_len else "",
+	filename=TXT_SAVE_PATH
 )
 del data_len, train_data_len, val_data_len # these are useless vars, delete them
 
@@ -256,7 +260,7 @@ class adaptive_early_stopping:
         return False
 
 # report number of parameters
-print(f"{Fore.WHITE}{Style.BRIGHT}{model.get_num_params()/1e6}M", "parameters")
+kprint(f"{Fore.WHITE}{Style.BRIGHT}{model.get_num_params()/1e6}M", "parameters", filename=TXT_SAVE_PATH)
 
 # initialize a GradScaler. If enabled=False scaler is a no-op
 scaler = torch.amp.GradScaler(enabled=False)
@@ -265,7 +269,7 @@ if hasattr(config, "coordinate_descent_tuning"):
     config.coordinate_descent_tuning = True # suggested by @Chillee
 # compile the model
 if CONFIG["compile"]:
-	print(f"Compiling the model... {Fore.BLACK}{Style.BRIGHT}(takes a ~minute)")
+	kprint(f"Compiling the model... {Fore.BLACK}{Style.BRIGHT}(takes a ~minute)", filename=TXT_SAVE_PATH)
 	#NOTE: backend="inductor" is giving some errors so switched to aot_eager.
 	model = torch.compile(model, backend="aot_eager") # requires PyTorch 2.0
 
@@ -295,7 +299,7 @@ while training_loop:
 			eval_dt = eval_t1 - eval_t0
 			eval_t0 = eval_t1
 
-			print(
+			kprint(
 				f"{Fore.WHITE}{Style.BRIGHT}step",
 				f"{Fore.BLACK}{Style.BRIGHT}[{iter_num}/{CONFIG["max_iters"]}]"
 				f"{Fore.RESET}{Style.RESET_ALL}:",
@@ -305,14 +309,15 @@ while training_loop:
 				f"{Fore.RESET}{Style.RESET_ALL},",
 				f"lr {Fore.WHITE}{Style.BRIGHT}{lr:.7f}"
 				f"{Fore.RESET}{Style.RESET_ALL},",
-				f"time took {Fore.BLACK}{Style.BRIGHT}{calc_total_time(eval_dt)}"
+				f"time took {Fore.BLACK}{Style.BRIGHT}{calc_total_time(eval_dt)}",
+				filename=TXT_SAVE_PATH
 			)
 
 			metrics["train"].append(losses["train"])
 			metrics["val"].append(losses["val"])
 
 			if stop_early.step(losses["val"]):
-				print(f"{Fore.RED}{Style.BRIGHT}early stopping.")
+				kprint(f"{Fore.RED}{Style.BRIGHT}early stopping.")
 				training_loop = False
 				break
 
@@ -321,7 +326,7 @@ while training_loop:
 			if not os.path.isdir(CONFIG["checkpoints"]["path"]):
 				os.mkdir(CONFIG["checkpoints"]["path"])
 
-			print(f"saved checkpoint at step {Fore.WHITE}{Style.BRIGHT}{iter_num}")
+			kprint(f"saved checkpoint at step {Fore.WHITE}{Style.BRIGHT}{iter_num}", filename=TXT_SAVE_PATH)
 			torch.save(get_trained_model(model, optimizer), f"{CONFIG["checkpoints"]["path"]}\\s{iter_num}.bin")
 
 		# forward backward update, with optional gradient accumulation to simulate larger batch size
@@ -362,7 +367,7 @@ while training_loop:
 				mfu = model.estimate_mfu(CONFIG["batch_size"] * CONFIG["gradient_accumulation_steps"], dt)
 				running_mfu = mfu if running_mfu == -1.0 else 0.9 * running_mfu + 0.1 * mfu
 
-			print(
+			kprint(
 				f"{Fore.WHITE}{Style.BRIGHT}iter",
 				f"{Fore.BLACK}{Style.BRIGHT}[{iter_num}/{CONFIG["max_iters"]}]"
 				f"{Fore.RESET}{Style.RESET_ALL}:",
@@ -370,7 +375,8 @@ while training_loop:
 				f"{Fore.RESET}{Style.RESET_ALL},",
 				f"mfu {Fore.WHITE}{Style.BRIGHT}{running_mfu*100:.2f}"
 				f"{Fore.RESET}{Style.RESET_ALL},",
-				f"time took {Fore.BLACK}{Style.BRIGHT}{calc_total_time(dt)}"
+				f"time took {Fore.BLACK}{Style.BRIGHT}{calc_total_time(dt)}",
+				filename=TXT_SAVE_PATH
 			)
 			metrics["mfu"].append(running_mfu)
 			metrics["eval"].append(lossf)
@@ -383,36 +389,36 @@ while training_loop:
 			break
 
 	except KeyboardInterrupt:
-		print("type")
-		print(f"{Fore.WHITE}{Style.BRIGHT}1. {Fore.BLACK}{Style.BRIGHT}`y` {Style.RESET_ALL}to stop training.")
-		print(f"{Fore.WHITE}{Style.BRIGHT}2. {Fore.BLACK}{Style.BRIGHT}`n` {Style.RESET_ALL}to continue training.")
-		print(f"{Fore.WHITE}{Style.BRIGHT}3. {Fore.BLACK}{Style.BRIGHT}`s` {Style.RESET_ALL}to save model.")
-		print(f"{Fore.WHITE}{Style.BRIGHT}4. {Fore.BLACK}{Style.BRIGHT}`r` {Style.RESET_ALL}to reload config.json.")
+		kprint("type", filename=TXT_SAVE_PATH)
+		kprint(f"{Fore.WHITE}{Style.BRIGHT}1. {Fore.BLACK}{Style.BRIGHT}`y` {Style.RESET_ALL}to stop training.", filename=TXT_SAVE_PATH)
+		kprint(f"{Fore.WHITE}{Style.BRIGHT}2. {Fore.BLACK}{Style.BRIGHT}`n` {Style.RESET_ALL}to continue training.", filename=TXT_SAVE_PATH)
+		kprint(f"{Fore.WHITE}{Style.BRIGHT}3. {Fore.BLACK}{Style.BRIGHT}`s` {Style.RESET_ALL}to save model.", filename=TXT_SAVE_PATH)
+		kprint(f"{Fore.WHITE}{Style.BRIGHT}4. {Fore.BLACK}{Style.BRIGHT}`r` {Style.RESET_ALL}to reload config.json.", filename=TXT_SAVE_PATH)
 
 		while True:
 			inp = input("> ")
 
 			if inp == "y":
-				print(f"{Fore.RED}{Style.BRIGHT}early stopping.")
+				kprint(f"{Fore.RED}{Style.BRIGHT}early stopping.", filename=TXT_SAVE_PATH)
 				training_loop = False
 				break
 
 			elif inp == "n":
-				print(f"{Fore.GREEN}{Style.BRIGHT}continue training.")
+				kprint(f"{Fore.GREEN}{Style.BRIGHT}continue training.", filename=TXT_SAVE_PATH)
 				break
 
 			elif inp == "s":
-				print(f"{Fore.YELLOW}{Style.BRIGHT}saving model.")
-				print("total time:", calc_total_time(time.time() - start_time))
+				kprint(f"{Fore.YELLOW}{Style.BRIGHT}saving model.")
+				kprint("total time:", calc_total_time(time.time() - start_time))
 				torch.save(get_trained_model(model, optimizer), CONFIG["save_path"])
 
 			elif inp == "r":
-				print(f"{Fore.YELLOW}{Style.BRIGHT}config.json{Style.RESET_ALL} reloaded.")
+				kprint(f"{Fore.YELLOW}{Style.BRIGHT}config.json{Style.RESET_ALL} reloaded.", filename=TXT_SAVE_PATH)
 				with open(CONFIG_PATH, "r", encoding="utf-8") as f:
 					CONFIG = json.load(f)
 
 			else:
-				print(f"{Fore.RED}{Style.DIM}Wrong option.")
+				kprint(f"{Fore.RED}{Style.DIM}Wrong option.")
 
-print("total time:", calc_total_time(time.time() - start_time))
+kprint("total time:", calc_total_time(time.time() - start_time), filename=TXT_SAVE_PATH)
 torch.save(get_trained_model(model, optimizer), CONFIG["save_path"])

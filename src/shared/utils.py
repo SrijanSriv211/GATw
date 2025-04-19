@@ -1,4 +1,6 @@
-import torch, pickle, time, sys, os
+import regex, time, sys, os
+
+ansi_escape = regex.compile(r'\x1B\[[0-?]*[ -/]*[@-~]')
 
 # dprint -> delay print
 # ChatGPT like print effect.
@@ -8,6 +10,18 @@ def dprint(text, delay=0.001):
         sys.stdout.flush()
         time.sleep(delay)
     print("\n")
+
+# kprint -> keep print
+# save the text in a text file
+def kprint(*text, filename=None):
+    print(*text)
+
+    if filename is None:
+        return
+
+    # save cleaned text to the file
+    with open(filename, "a", encoding="utf-8") as f:
+        f.write(" ".join(tuple(ansi_escape.sub('', part) for part in text)) + "\n")
 
 def get_bin_path():
     # get the absolute path of the current file
