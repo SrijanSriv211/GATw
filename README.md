@@ -48,3 +48,27 @@ This is how `config.json` should look-like
 	"compile": true
 }
 ```
+
+
+This is how `enc_config.json` should look like:
+```json
+{
+	"dataset_path": "data\\data.txt",
+	"merge_vocab_size": 2043,
+	"text_range": 50000000,
+	"special_tokens": ["<|sot|>", "<|eot|>", "<|pad|>", "<|sep|>", "<|reason|>"],
+	"outpath": "bin\\cl2k.bin"
+}
+```
+
+
+And this is how `prep_data_config.json` should look like:
+```json
+{
+	"enc_path": "bin\\cl2k.bin",
+	"dataset_path": "data\\base",
+	"outpath": "bin",
+	"data_division": 0.8,
+	"distribution": null
+}
+```

@@ -1,5 +1,5 @@
 from encoder.bytepair import Encoder
-import torch, pickle, os
+import torch, pickle, json, sys, os
 
 def save_distributed_data(path, name, data, distribution):
     distributed_data = [] # (path, data)
@@ -46,14 +46,18 @@ def prepare_data(encoded_data, path="data", data_division=1, convert_to_tensor=T
 
     save_distributed_data(path, "train", train_data if 0 < data_division < 1 else data, distribution)
 
+CONFIG_PATH = sys.argv[1] if len(sys.argv) > 1 else "scripts\\prep_data_config.json"
+with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+	CONFIG = json.load(f)
+
 enc = Encoder()
-enc.load("bin\\cl1k.bin")
+enc.load(CONFIG["enc_path"])
 data = []
 
 """
 Pretraining dataset
 """
-path = "data\\base"
+path = CONFIG["dataset_path"]
 files = os.listdir(path)
 
 for i in files:
@@ -69,4 +73,4 @@ data = "\n\n".join(data)
 # 	f.write(data + "\n")
 
 print(f"{(len(data)/1e6)}M total chars", f"{(len(set(data)))} unique chars")
-prepare_data(enc.encode(data, allowed_special="all"), "bin", 0.8, distribution=None)
+prepare_data(enc.encode(data, allowed_special="all"), CONFIG["outpath"], data_division=CONFIG["data_division"], distribution=CONFIG["distribution"])

@@ -20,7 +20,7 @@ s = sample()
 s.load(torch.load(sys.argv[1]), True)
 
 enc = Encoder()
-enc.load("bin\\cl1k.bin")
+enc.load("bin\\cl2k.bin")
 
 test = [
 	"Google ",

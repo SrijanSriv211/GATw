@@ -1,7 +1,12 @@
 from encoder.bytepair import Encoder
+import json, sys
 enc = Encoder()
 
-#* set `vocab_size` in `config.json` 1225 (35 squared)
-enc.train("data\\data.txt", 1220, text_range=50_000_000)
-enc.register_special_tokens("<|sot|>", "<|eot|>", "<|pad|>", "<|sep|>", "<|reason|>")
-enc.save("bin\\cl1k.bin")
+CONFIG_PATH = sys.argv[1] if len(sys.argv) > 1 else "scripts\\enc_config.json"
+with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+	CONFIG = json.load(f)
+
+#* set `vocab_size` in `config.json` 2048
+enc.train(CONFIG["dataset_path"], CONFIG["merge_vocab_size"], text_range=CONFIG["text_range"])
+enc.register_special_tokens(*CONFIG["special_tokens"])
+enc.save(CONFIG["outpath"])
