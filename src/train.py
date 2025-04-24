@@ -1,6 +1,7 @@
 from shared.utils import calc_total_time, kprint
-from models.gpt import GPTConfig, GPT
+from models.gpt import GPTConfig, GPT, sample
 from colorama import Style, Fore, init
+from encoder.bytepair import Encoder
 from contextlib import nullcontext
 from pathlib import Path
 import warnings, pickle, random, time, math, os
@@ -282,6 +283,9 @@ local_iter_num = 0 # number of iterations in the lifetime of this process
 running_mfu = -1.0 if metrics["mfu"] == [] else metrics["mfu"][-1]
 training_loop = True
 stop_early = adaptive_early_stopping()
+training_sample = sample()
+enc = Encoder()
+enc.load(CONFIG["encoder_path"])
 
 while training_loop:
 	try:
@@ -328,6 +332,14 @@ while training_loop:
 
 			kprint(f"saved checkpoint at step {Fore.WHITE}{Style.BRIGHT}{iter_num}", filename=TXT_SAVE_PATH)
 			torch.save(get_trained_model(model, optimizer), f"{CONFIG["checkpoints"]["path"]}\\s{iter_num}.bin")
+
+		# generate some sample text
+		if CONFIG["gen_interval"] != None and iter_num > 0 and iter_num % CONFIG["gen_interval"] == 0:
+			training_sample.load(get_trained_model(model, optimizer), True)
+
+			for _ in range(CONFIG["gen_iters"]):
+				out = enc.decode(training_sample.generate(None, length=256))
+				kprint(f"{Style.BRIGHT}{Fore.BLACK}```s{iter_num}.bin\n{out}\n```\n", filename=TXT_SAVE_PATH)
 
 		# forward backward update, with optional gradient accumulation to simulate larger batch size
 		# and using the GradScaler if data type is float16
