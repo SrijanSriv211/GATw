@@ -1,7 +1,14 @@
 # GATw
+## Generative Alphabet Transformers write
 A super small and simple language model
 
-This is how `config.json` should look-like
+> [!NOTE]
+> You need to create `scripts`, `data`, `bin` and `res` folders.<br>
+> Code for training the model and tokenizer was written by Andrej Karpathy:<br>
+> 1. [minBPE repo](https://github.com/karpathy/minbpe/)<br>
+> 2. [nanoGPT repo](https://github.com/karpathy/nanoGPT/)
+
+This is how `scripts\config.json` should look-like
 
 ```json
 {
@@ -53,7 +60,7 @@ This is how `config.json` should look-like
 ```
 
 
-This is how `enc_config.json` should look like:
+This is how `scripts\enc_config.json` should look like:
 ```json
 {
 	"dataset_path": "data\\data.txt",
@@ -65,7 +72,7 @@ This is how `enc_config.json` should look like:
 ```
 
 
-And this is how `prep_data_config.json` should look like:
+And this is how `scripts\prep_data_config.json` should look like:
 ```json
 {
 	"enc_path": "bin\\cl2k.bin",

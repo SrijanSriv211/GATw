@@ -24,7 +24,7 @@ enc.load("bin\\cl4k.bin")
 
 test = [
 	"Google ",
-	"Shahrukh Khan ",
+	"Shah Rukh Khan ",
 	"Hello I'm a language model, and ",
 	"Can I say that Calcia is really a branch of math or is it something nonsense",
 	"Every year the moon is going",
