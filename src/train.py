@@ -3,8 +3,9 @@ from models.gpt import GPTConfig, GPT, sample
 from colorama import Style, Fore, init
 from encoder.bytepair import Encoder
 from contextlib import nullcontext
+from rich.progress import track
 from pathlib import Path
-import warnings, pickle, random, time, math, os
+import warnings, pickle, pandas, random, time, math, os
 import torch._inductor.config as config
 import torch.amp, torch, json, sys
 
@@ -27,6 +28,11 @@ SAVE_PATH = Path(CONFIG["save_path"])
 TXT_SAVE_PATH = list(SAVE_PATH.parts)
 TXT_SAVE_PATH[-1] = SAVE_PATH.stem
 TXT_SAVE_PATH = "\\".join(TXT_SAVE_PATH) + ".txt"
+
+with open(TXT_SAVE_PATH, "w", encoding="utf-8") as f:
+	if CONFIG["init_from"] == "scratch":
+		f.write("")
+
 kprint(f"{Fore.WHITE}{Style.DIM}```config.json\n{json.dumps(CONFIG, indent=4)}\n```", filename=TXT_SAVE_PATH)
 
 # set device
@@ -134,30 +140,22 @@ elif CONFIG["init_from"].startswith("pretrained,"):
 train_data, val_data = None, None
 train_data_len, val_data_len = 0, 0
 if CONFIG["load_from_file"]:
-	# try to load and check all the data
-	with open(CONFIG["train_data"], "rb") as f:
-		train_data = pickle.load(f)
-		train_data_len = len(train_data)
+	train_data = [torch.tensor(i, dtype=torch.long) for i in pandas.read_parquet(CONFIG["train_data"], engine="pyarrow")["tok"].tolist()]
+	val_data = [torch.tensor(i, dtype=torch.long) for i in pandas.read_parquet(CONFIG["val_data"], engine="pyarrow")["tok"].tolist()]
 
-	with open(CONFIG["val_data"], "rb") as f:
-		val_data = pickle.load(f)
-		val_data_len = len(val_data)
+	for i in train_data:
+		train_data_len += len(i)
 
-else:
-	for i in os.listdir(CONFIG["train_data"]):
-		# try to load and check all the data
-		with open(f"{CONFIG["train_data"]}\\{i}", "rb") as f:
-			train_data_len += len(pickle.load(f))
-
-	for i in os.listdir(CONFIG["val_data"]):
-		with open(f"{CONFIG["val_data"]}\\{i}", "rb") as f:
-			val_data_len += len(pickle.load(f))
+	for i in val_data:
+		val_data_len += len(i)
 
 data_len = train_data_len + val_data_len
 
 # print the number of tokens
 kprint(f"{Fore.WHITE}{Style.BRIGHT}{(data_len/1e6)}M", "total tokens", filename=TXT_SAVE_PATH)
 kprint(
+	f"{Fore.WHITE}{Style.BRIGHT}{(len(train_data)/1e6)}M", "train entries,",
+	f"{Fore.WHITE}{Style.BRIGHT}{(len(val_data)/1e6)}M", "test entries\n"
 	f"{Fore.WHITE}{Style.BRIGHT}{(train_data_len/1e6)}M", "train tokens,",
 	f"{Fore.WHITE}{Style.BRIGHT}{(val_data_len/1e6)}M", "test tokens",
 	f"   {Fore.WHITE}{Style.DIM}(Using train tokens as test tokens)" if train_data_len == val_data_len else "",
@@ -195,9 +193,26 @@ def get_batch(split):
 	path = CONFIG["train_data"] if split == "train" else CONFIG["val_data"]
 	data = _load_data(path)
 
-	ix = torch.randint(len(data) - CONFIG["block_size"], (CONFIG["batch_size"],))
-	x = torch.stack([data[i:i+CONFIG["block_size"]] for i in ix])
-	y = torch.stack([data[i+1:i+CONFIG["block_size"]+1] for i in ix])
+	# get `batch_size` number of random entries
+	ix = torch.randint(len(data), (CONFIG["batch_size"],))
+	k = {}
+
+	# get `block_size + 4` length of data for each batch
+	for i in ix:
+		k[i.item()] = data[i]
+
+		# `CONFIG["block_size"] + 4` to ensure that `k` is always greater than block_size
+		c = 1
+		while len(k[i.item()]) < CONFIG["block_size"]+4:
+			k[i.item()] = torch.cat((k[i.item()], data[0] if i+c >= len(data) else data[i+c]))
+			c += 1
+
+	# randomly select starting position
+	p = {i: random.randint(0, len(k[i]) - CONFIG["block_size"] - 1) if random.randint(0, 1) == 1 else 0 for i in k}
+
+	# prepare the train and val dataset
+	x = torch.stack([k[i][p[i] : p[i] + CONFIG["block_size"]] for i in k])
+	y = torch.stack([k[i][p[i] + 1 : p[i] + CONFIG["block_size"] + 1] for i in k])
 	x, y = x.to(device), y.to(device)
 	return x, y
 
@@ -208,7 +223,7 @@ def estimate_loss(eval_iters):
 	model.eval()
 	for split in ["train", "val"]:
 		losses = torch.zeros(eval_iters)
-		for k in range(eval_iters):
+		for k in track(range(eval_iters), description=f"{Fore.WHITE}{Style.BRIGHT}eval {Fore.WHITE}{Style.DIM}{split}{Style.RESET_ALL}"):
 			X, Y = get_batch(split)
 			with ctx:
 				logits, loss = model(X, Y)
@@ -295,6 +310,14 @@ while training_loop:
 			param_group["lr"] = lr
 		metrics["lr"].append(lr)
 
+		# generate some sample text
+		if CONFIG["gen_interval"] != None and iter_num > 0 and iter_num % CONFIG["gen_interval"] == 0:
+			training_sample.load(get_trained_model(model, optimizer), True)
+
+			for _ in range(CONFIG["gen_iters"]):
+				out = enc.decode(training_sample.generate(None, length=256))
+				kprint(f"{Style.BRIGHT}{Fore.BLACK}```s{iter_num}.bin\n{out}\n```\n", filename=TXT_SAVE_PATH)
+
 		# evaluate the loss on train/val sets and write checkpoints
 		if iter_num % CONFIG["eval_interval"] == 0:
 			losses = estimate_loss(CONFIG["eval_iters"])
@@ -332,14 +355,6 @@ while training_loop:
 
 			kprint(f"saved checkpoint at step {Fore.WHITE}{Style.BRIGHT}{iter_num}", filename=TXT_SAVE_PATH)
 			torch.save(get_trained_model(model, optimizer), f"{CONFIG["checkpoints"]["path"]}\\s{iter_num}.bin")
-
-		# generate some sample text
-		if CONFIG["gen_interval"] != None and iter_num > 0 and iter_num % CONFIG["gen_interval"] == 0:
-			training_sample.load(get_trained_model(model, optimizer), True)
-
-			for _ in range(CONFIG["gen_iters"]):
-				out = enc.decode(training_sample.generate(None, length=256))
-				kprint(f"{Style.BRIGHT}{Fore.BLACK}```s{iter_num}.bin\n{out}\n```\n", filename=TXT_SAVE_PATH)
 
 		# forward backward update, with optional gradient accumulation to simulate larger batch size
 		# and using the GradScaler if data type is float16
