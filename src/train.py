@@ -223,7 +223,7 @@ def estimate_loss(eval_iters):
 	model.eval()
 	for split in ["train", "val"]:
 		losses = torch.zeros(eval_iters)
-		for k in track(range(eval_iters), description=f"{Fore.WHITE}{Style.BRIGHT}eval {Fore.WHITE}{Style.DIM}{split}{Style.RESET_ALL}"):
+		for k in track(range(eval_iters), description=f"{Fore.WHITE}{Style.BRIGHT}calc {Fore.WHITE}{Style.DIM}{split} loss{Style.RESET_ALL}"):
 			X, Y = get_batch(split)
 			with ctx:
 				logits, loss = model(X, Y)
