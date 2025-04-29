@@ -1,50 +1,43 @@
 from encoder.bytepair import Encoder
-import torch, pickle, json, sys, os
+from rich.progress import track
+from colorama import Style, Fore, init
+import pandas, json, sys, os
 
-def save_distributed_data(path, name, data, distribution):
-    distributed_data = [] # (path, data)
+init(autoreset=True)
 
-    # distribute the data
-    if distribution:
-        if not os.path.isdir(f"{path}\\{name}"):
-            os.mkdir(f"{path}\\{name}")
+def prepare_data(encoded_data, path="data", data_division=1):
+    # print the number of tokens
+	total_tokens = 0
+	for i in encoded_data:
+		total_tokens += len(i)
+	print(f"{(total_tokens/1e6)}M", "total tokens")
 
-        count = 1
-        for i in range(0, len(data), int(len(data) / distribution)):
-            d = data[i:i+distribution]
-            print(f"{len(d)}: [{i}:{i+distribution}]", f"{path}\\{name}\\{count}.bin")
-            distributed_data.append((f"{path}\\{name}\\{count}.bin", d))
-            count += 1
+	# train and test splits
+	train_data, val_data = [], []
+	for i, x in enumerate(encoded_data):
+		if 0 < data_division < 1 and i % (data_division * 10) == 0:
+			val_data.append(x)
 
-    else:
-        distributed_data.append((f"{path}\\{name}.bin", data))
-    del data
-
-    # save the data
-    for p, d in distributed_data:
-        with open(p, "wb") as f:
-            pickle.dump(d, f)
-
-def prepare_data(encoded_data, path="data", data_division=1, convert_to_tensor=True, distribution=None):
-    data = torch.tensor(encoded_data, dtype=torch.long) if convert_to_tensor else encoded_data
+		else:
+			train_data.append(x)
+	del encoded_data
 
     # print the number of tokens
-    print(f"{(len(data)/1e6)}M", "total tokens")
+	train_tokens, val_tokens = 0, 0
+	for i in train_data:
+		train_tokens += len(i)
 
-    if 0 < data_division < 1:
-        # train and test splits
-        n = int(data_division * len(data)) # the first (data_division * 100)% will be train, rest val
-        train_data = data[:n]
-        val_data = data[n:] if 0 < data_division < 1 else data[:n]
-        del data # free up some memory
+	for i in val_data:
+		val_tokens += len(i)
 
-        print(f"{(len(train_data)/1e6)}M", "train tokens,", f"{(len(val_data)/1e6)}M", "test tokens")
+	print(
+		f"{(len(train_data)/1e6)}M train entries,", f"{(train_tokens/1e6)}M train tokens,",
+		f"{(len(val_data)/1e6)}M test entries," f"{(val_tokens/1e6)}M test tokens"
+	)
 
-        # save the data
-        save_distributed_data(path, "val", val_data, distribution)
-        del val_data # again free up some memory
-
-    save_distributed_data(path, "train", train_data if 0 < data_division < 1 else data, distribution)
+	# save data
+	pandas.DataFrame({"tok": train_data}).to_parquet(f"{path}\\train.parquet", engine="pyarrow")
+	pandas.DataFrame({"tok": val_data}).to_parquet(f"{path}\\val.parquet", engine="pyarrow") if val_tokens > 0 else None
 
 CONFIG_PATH = sys.argv[1] if len(sys.argv) > 1 else "scripts\\prep_data_config.json"
 with open(CONFIG_PATH, "r", encoding="utf-8") as f:
@@ -60,17 +53,15 @@ Pretraining dataset
 path = CONFIG["dataset_path"]
 files = os.listdir(path)
 
+total_chars = 0
+unique_chars = set()
 for i in files:
 	with open(f"{path}\\{i}", "r", encoding="utf-8") as f:
-		data.append(f"========== {i} ==========\n{f.read()}")
+		for k in track(json.load(f), f"{Fore.WHITE}{Style.BRIGHT}encoding {Fore.WHITE}{Style.DIM}{i}{Style.RESET_ALL}"):
+			data.append(enc.encode(k, allowed_special="all"))
+			total_chars += len(k)
+			unique_chars.update(set(k))
+unique_chars = len(unique_chars)
 
-"""
-Save dataset
-"""
-data = "\n\n".join(data)
-
-# with open("data\\data.txt", "w", encoding="utf-8") as f:
-# 	f.write(data + "\n")
-
-print(f"{(len(data)/1e6)}M total chars", f"{(len(set(data)))} unique chars")
-prepare_data(enc.encode(data, allowed_special="all"), CONFIG["outpath"], data_division=CONFIG["data_division"], distribution=CONFIG["distribution"])
+print(f"{(len(data)/1e6)}M total entries,", f"{(total_chars/1e6)}M total chars,", f"{unique_chars} unique chars")
+prepare_data(data, CONFIG["outpath"], data_division=CONFIG["data_division"])
