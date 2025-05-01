@@ -32,7 +32,7 @@ def prepare_data(encoded_data, path="data", data_division=1):
 
 	print(
 		f"{(len(train_data)/1e6)}M train entries,", f"{(train_tokens/1e6)}M train tokens,",
-		f"{(len(val_data)/1e6)}M test entries," f"{(val_tokens/1e6)}M test tokens"
+		f"{(len(val_data)/1e6)}M test entries,", f"{(val_tokens/1e6)}M test tokens"
 	)
 
 	# save data
