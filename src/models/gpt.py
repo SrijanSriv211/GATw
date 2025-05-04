@@ -1,7 +1,3 @@
-# https://github.com/karpathy/nanogpt
-# https://github.com/karpathy/llm.c/tree/master
-# https://github.com/KellerJordan/modded-nanogpt
-
 from colorama import Style, Fore, init
 from torch.nn import functional as F
 from dataclasses import dataclass
@@ -37,9 +33,21 @@ class CausalSelfAttention(nn.Module):
         self.n_head = config.n_head
         self.n_embd = config.n_embd
         self.dropout = config.dropout
+        self.use_rope = config.use_rope
+        self.rope_base = config.rope_base
 
-        # causal mask to ensure that attention is only applied to the left in the input sequence
-        self.register_buffer("bias", torch.tril(torch.ones(config.block_size, config.block_size)).view(1, 1, config.block_size, config.block_size))
+        # flash attention make GPU go brrrrr but support is only in PyTorch >= 2.0
+        self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
+        if not self.flash:
+            print(f"{Fore.RED}{Style.BRIGHT}WARNING: {Fore.WHITE}{Style.DIM}using slow attention. Flash Attention requires PyTorch >= 2.0")
+            # causal mask to ensure that attention is only applied to the left in the input sequence
+            self.register_buffer("bias", torch.tril(torch.ones(config.block_size, config.block_size)).view(1, 1, config.block_size, config.block_size))
+
+        # https://github.com/karpathy/nanoGPT/blob/e43ee93fa6077accc1c3d50afd89f54346562891/model.py
+        if self.use_rope:
+            hs = self.n_embd // self.n_head
+            d = hs // 2
+            self.register_buffer('theta', 1.0 / (self.rope_base ** (2 * torch.arange(0, d, dtype=torch.float32) / hs)))
 
     def forward(self, x):
         B, T, C = x.size() # batch size, sequence length, embedding dimensionality (n_embd)
@@ -50,10 +58,43 @@ class CausalSelfAttention(nn.Module):
         q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
         v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
 
+        if self.use_rope:
+            # Use precomputed theta and cast to input dtype
+            hs = C // self.n_head  # head dimension
+            d = hs // 2  # number of dimension pairs
+            theta = self.theta[:d].to(x.dtype)  # Cast to input dtype
+
+            # Compute frequencies using input dtype
+            t = torch.arange(T, device=x.device, dtype=x.dtype)
+            freqs = torch.outer(t, theta)
+            freqs_cos = torch.cos(freqs).unsqueeze(0).unsqueeze(0)  # (1, 1, T, d)
+            freqs_sin = torch.sin(freqs).unsqueeze(0).unsqueeze(0)  # (1, 1, T, d)
+
+            # Optimized RoPE application without type casting
+            def apply_rope(x, cos, sin):
+                x_ = x.reshape(*x.shape[:-1], -1, 2)  # (B, nh, T, d, 2)
+                x0 = x_[..., 0]
+                x1 = x_[..., 1]
+                x0_rot = x0 * cos - x1 * sin
+                x1_rot = x0 * sin + x1 * cos
+                x_rot = torch.stack([x0_rot, x1_rot], dim=-1).flatten(start_dim=-2)
+                return x_rot
+
+            q = apply_rope(q, freqs_cos, freqs_sin)
+            k = apply_rope(k, freqs_cos, freqs_sin)
+
         # causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
-        # efficient attention using Flash Attention CUDA kernels
-        # flash attention make GPU go brrrrr but support is only in PyTorch >= 2.0
-        y = torch.nn.functional.scaled_dot_product_attention(q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2), attn_mask=None, dropout_p=self.dropout if self.training else 0, is_causal=True)
+        if self.flash:
+            # efficient attention using Flash Attention CUDA kernels
+            y = torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask=None, dropout_p=self.dropout if self.training else 0, is_causal=True)
+
+        else:
+            # manual implementation of attention
+            att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
+            att = att.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf'))
+            att = F.softmax(att, dim=-1)
+            att = self.attn_dropout(att)
+            y = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
         y = y.transpose(1, 2).contiguous().view(B, T, C) # re-assemble all head outputs side by side
 
         # output projection
@@ -99,6 +140,8 @@ class GPTConfig:
     beta1: float = 0.9
     beta2: float = 0.95
     dropout: float = 0.0
+    use_rope: bool = False
+    rope_base: float = 10000.0
     bias: bool = False # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
 
 class GPT(nn.Module):
@@ -107,10 +150,11 @@ class GPT(nn.Module):
         assert config.vocab_size is not None
         assert config.block_size is not None
         self.config = config
+        self.use_rope = config.use_rope
 
         self.transformer = nn.ModuleDict(dict(
             wte = nn.Embedding(config.vocab_size, config.n_embd),
-            wpe = nn.Embedding(config.block_size, config.n_embd),
+            wpe = None if self.use_rope else nn.Embedding(config.block_size, config.n_embd),
             drop = nn.Dropout(config.dropout),
             h = nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
             ln_f = LayerNorm(config.n_embd, bias=False),
@@ -138,7 +182,7 @@ class GPT(nn.Module):
         params are actually used as weights in the final layer, so we include them.
         """
         n_params = sum(p.numel() for p in self.parameters())
-        if non_embedding:
+        if non_embedding and not self.use_rope:
             n_params -= self.transformer.wpe.weight.numel()
         return n_params
 
@@ -159,8 +203,13 @@ class GPT(nn.Module):
 
         # forward the GPT model itself
         tok_emb = self.transformer.wte(idx) # token embeddings of shape (b, t, n_embd)
-        pos_emb = self.transformer.wpe(pos) # position embeddings of shape (t, n_embd)
-        x = self.transformer.drop(tok_emb + pos_emb)
+        if self.use_rope:
+            x = self.transformer.drop(tok_emb)
+
+        else:
+            pos_emb = self.transformer.wpe(pos) # position embeddings of shape (t, n_embd)
+            x = self.transformer.drop(tok_emb + pos_emb)
+
         for block in self.transformer.h:
             x = block(x)
         x = self.transformer.ln_f(x)
@@ -183,7 +232,10 @@ class GPT(nn.Module):
         # but want to use a smaller block size for some smaller, simpler model
         assert block_size <= self.config.block_size
         self.config.block_size = block_size
-        self.transformer.wpe.weight = nn.Parameter(self.transformer.wpe.weight[:block_size])
+
+        if not self.use_rope:
+            self.transformer.wpe.weight = nn.Parameter(self.transformer.wpe.weight[:block_size])
+
         for block in self.transformer.h:
             if hasattr(block.attn, 'bias'):
                 block.attn.bias = block.attn.bias[:,:,:block_size,:block_size]
@@ -254,18 +306,23 @@ class GPT(nn.Module):
             # forward the model to get the logits for the index in the sequence
             logits, _ = self(idx_cond)
             # pluck the logits at the final step and scale by desired temperature
-            logits = logits[:, -1, :] / temperature
-            # optionally crop the logits to only the top k options
-            if top_k is not None:
-                v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
-                logits[logits < v[:, [-1]]] = -float('Inf')
-            # apply softmax to convert logits to (normalized) probabilities
-            probs = F.softmax(logits, dim=-1)
-            # sample from the distribution
-            idx_next = torch.multinomial(probs, num_samples=1)
-            # append sampled index to the running sequence and continue
-            idx = torch.cat((idx, idx_next), dim=1)
+            # https://github.com/karpathy/nanoGPT/pull/546/
+            if temperature == 0:
+                logits = logits[:, -1, :]
+                idx_next = torch.argmax(logits, dim=-1, keepdim=True)
 
+            else:
+                logits = logits[:, -1, :] / temperature
+                # optionally crop the logits to only the top k options
+                if top_k is not None:
+                    v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
+                    logits[logits < v[:, [-1]]] = -float('Inf')
+                # apply softmax to convert logits to (normalized) probabilities
+                probs = F.softmax(logits, dim=-1)
+                # sample from the distribution
+                idx_next = torch.multinomial(probs, num_samples=1)
+                # append sampled index to the running sequence and continue
+                idx = torch.cat((idx, idx_next), dim=1)
         return idx
 
 # ---------------------------------------------------------------------------
