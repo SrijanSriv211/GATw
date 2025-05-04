@@ -256,14 +256,14 @@ class GPT(nn.Module):
         num_decay_params = sum(p.numel() for p in decay_params)
         num_nodecay_params = sum(p.numel() for p in nodecay_params)
         print(
-            f"Num decayed parameter tensors: {Fore.WHITE}{Style.BRIGHT}{len(decay_params)}"
+            f"num decayed parameter tensors: {Fore.WHITE}{Style.BRIGHT}{len(decay_params)}"
             f"{Style.RESET_ALL},",
             f"with {Fore.WHITE}{Style.BRIGHT}{num_decay_params:,}",
             "parameters"
         )
 
         print(
-            f"Num non-decayed parameter tensors: {Fore.WHITE}{Style.BRIGHT}{len(nodecay_params)}"
+            f"num non-decayed parameter tensors: {Fore.WHITE}{Style.BRIGHT}{len(nodecay_params)}"
             f"{Style.RESET_ALL},",
             f"with {Fore.WHITE}{Style.BRIGHT}{num_nodecay_params:,}",
             "parameters"
@@ -273,7 +273,7 @@ class GPT(nn.Module):
         fused_available = 'fused' in inspect.signature(torch.optim.AdamW).parameters
         use_fused = fused_available and device_type == 'cuda'
         color = f"{Fore.LIGHTGREEN_EX}{Style.BRIGHT}" if use_fused == True else f"{Fore.LIGHTRED_EX}{Style.BRIGHT}"
-        print(f"Using fused AdamW: {color}{use_fused}")
+        print(f"using fused AdamW: {color}{use_fused}")
         optimizer = torch.optim.AdamW(optim_groups, lr=learning_rate, betas=(self.config.beta1, self.config.beta2), fused=use_fused)
         return optimizer
 

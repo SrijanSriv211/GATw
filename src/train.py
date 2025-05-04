@@ -33,7 +33,7 @@ with open(TXT_SAVE_PATH, "w", encoding="utf-8") as f:
 	if CONFIG["init_from"] == "scratch":
 		f.write("")
 
-kprint(f"{Fore.WHITE}{Style.DIM}```config.json\n{json.dumps(CONFIG, indent=4)}\n```", filename=TXT_SAVE_PATH)
+kprint(f"{Fore.WHITE}{Style.DIM}```config.json\n{json.dumps(CONFIG, indent=4)}\n```", filename=TXT_SAVE_PATH, println=False)
 
 # set device
 device = ("cuda" if torch.cuda.is_available() else "cpu") if CONFIG["device"] == "auto" else CONFIG["device"]
@@ -50,7 +50,6 @@ ctx = nullcontext() if device == "cpu" else torch.amp.autocast(device_type=devic
 
 # print the device
 kprint("Training on", f"{Fore.YELLOW}{Style.BRIGHT}{device}", f"{Fore.WHITE}{Style.BRIGHT}({torch.initial_seed()})", filename=TXT_SAVE_PATH)
-kprint("Using RoPE in GPT init:", f"{Fore.WHITE}{Style.BRIGHT}{CONFIG["use_rope"]}", filename=TXT_SAVE_PATH)
 
 def from_scratch():
 	hyperparams = dict(dropout=CONFIG["dropout"])
@@ -153,13 +152,15 @@ if CONFIG["load_from_file"]:
 data_len = train_data_len + val_data_len
 
 # print the number of tokens
+color = f"{Fore.LIGHTGREEN_EX}{Style.BRIGHT}" if CONFIG["use_rope"] else f"{Fore.LIGHTRED_EX}{Style.BRIGHT}"
+kprint("using RoPE:", f"{color}{CONFIG["use_rope"]}", filename=TXT_SAVE_PATH)
 kprint(f"{Fore.WHITE}{Style.BRIGHT}{(data_len/1e6)}M", "total tokens", filename=TXT_SAVE_PATH)
 kprint(
 	f"{Fore.WHITE}{Style.BRIGHT}{(len(train_data)/1e6)}M", "train entries,",
 	f"{Fore.WHITE}{Style.BRIGHT}{(len(val_data)/1e6)}M", "test entries\n"
 	f"{Fore.WHITE}{Style.BRIGHT}{(train_data_len/1e6)}M", "train tokens,",
 	f"{Fore.WHITE}{Style.BRIGHT}{(val_data_len/1e6)}M", "test tokens",
-	f"   {Fore.WHITE}{Style.DIM}(Using train tokens as test tokens)" if train_data_len == val_data_len else "",
+	f"   {Fore.WHITE}{Style.DIM}(using train tokens as test tokens)" if train_data_len == val_data_len else "",
 	filename=TXT_SAVE_PATH
 )
 del data_len, train_data_len, val_data_len # these are useless vars, delete them
@@ -286,7 +287,7 @@ if hasattr(config, "coordinate_descent_tuning"):
     config.coordinate_descent_tuning = True # suggested by @Chillee
 # compile the model
 if CONFIG["compile"]:
-	kprint(f"Compiling the model... {Fore.BLACK}{Style.BRIGHT}(takes a ~minute)", filename=TXT_SAVE_PATH)
+	kprint(f"compiling the model... {Fore.BLACK}{Style.BRIGHT}(takes a ~minute)", filename=TXT_SAVE_PATH)
 	#NOTE: backend="inductor" is giving some errors so switched to aot_eager.
 	model = torch.compile(model, backend="aot_eager") # requires PyTorch 2.0
 
@@ -320,7 +321,7 @@ while training_loop:
 				kprint(f"{Style.BRIGHT}{Fore.BLACK}```s{iter_num}.bin\n{out}\n```\n", filename=TXT_SAVE_PATH)
 
 		# evaluate the loss on train/val sets and write checkpoints
-		if iter_num % CONFIG["eval_interval"] == 0:
+		if iter_num > 0 and iter_num % CONFIG["eval_interval"] == 0:
 			losses = estimate_loss(CONFIG["eval_iters"])
 			# timing and logging
 			eval_t1 = time.time()

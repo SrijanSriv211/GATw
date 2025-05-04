@@ -13,8 +13,8 @@ def dprint(text, delay=0.001):
 
 # kprint -> keep print
 # save the text in a text file
-def kprint(*text, filename=None):
-    print(*text)
+def kprint(*text, filename=None, println=True):
+    print(*text) if println else None
 
     if filename is None:
         return
