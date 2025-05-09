@@ -43,7 +43,7 @@ class CausalSelfAttention(nn.Module):
             # causal mask to ensure that attention is only applied to the left in the input sequence
             self.register_buffer("bias", torch.tril(torch.ones(config.block_size, config.block_size)).view(1, 1, config.block_size, config.block_size))
 
-        # https://github.com/karpathy/nanoGPT/blob/e43ee93fa6077accc1c3d50afd89f54346562891/model.py
+        # https://github.com/karpathy/nanoGPT/pull/590/files
         if self.use_rope:
             hs = self.n_embd // self.n_head
             d = hs // 2

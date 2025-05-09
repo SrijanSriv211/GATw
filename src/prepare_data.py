@@ -55,9 +55,10 @@ files = os.listdir(path)
 
 total_chars = 0
 unique_chars = set()
-for i in files:
-	with open(f"{path}\\{i}", "r", encoding="utf-8") as f:
-		for k in track(json.load(f), f"{Fore.WHITE}{Style.BRIGHT}encoding {Fore.WHITE}{Style.DIM}{i}{Style.RESET_ALL}"):
+for file in files:
+	with open(f"{path}/{file}", "r", encoding="utf-8") as f:
+		obj = json.load(f)
+		for k in track(obj, f"{Fore.WHITE}{Style.BRIGHT}encoding {Fore.WHITE}{Style.DIM}{file}{Style.RESET_ALL}"):
 			data.append(enc.encode(k, allowed_special="all"))
 			total_chars += len(k)
 			unique_chars.update(set(k))

@@ -26,6 +26,7 @@ test = [
 	"Google ",
 	"Shah Rukh Khan ",
 	"Hello I'm a language model, and ",
+	"Once upon a time",
 	"Can I say that Calcia is really a branch of math or is it something nonsense",
 	"Every year the moon is going",
 	"o/ The workings of the Undetailed",
