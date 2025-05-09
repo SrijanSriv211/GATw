@@ -33,7 +33,7 @@ if CONFIG["init_from"] == "scratch":
 	with open(TXT_SAVE_PATH, "w", encoding="utf-8") as f:
 		f.write("")
 
-kprint(f"{Fore.WHITE}{Style.DIM}```config.json\n{json.dumps(CONFIG, indent=4)}\n```", filename=TXT_SAVE_PATH, println=False)
+kprint(f"```config.json\n{json.dumps(CONFIG, indent=4)}\n```", filename=TXT_SAVE_PATH, println=False)
 
 # set device
 device = ("cuda" if torch.cuda.is_available() else "cpu") if CONFIG["device"] == "auto" else CONFIG["device"]
@@ -287,7 +287,7 @@ if hasattr(config, "coordinate_descent_tuning"):
     config.coordinate_descent_tuning = True # suggested by @Chillee
 # compile the model
 if CONFIG["compile"]:
-	kprint(f"compiling the model... {Fore.BLACK}{Style.BRIGHT}(takes a ~minute)", filename=TXT_SAVE_PATH)
+	kprint(f"compiling the model... {Fore.WHITE}{Style.DIM}(takes a ~minute)", filename=TXT_SAVE_PATH)
 	#NOTE: backend="inductor" is giving some errors so switched to aot_eager.
 	model = torch.compile(model, backend="aot_eager") # requires PyTorch 2.0
 
@@ -338,7 +338,7 @@ while training_loop:
 
 			kprint(
 				f"{Fore.WHITE}{Style.BRIGHT}step",
-				f"{Fore.BLACK}{Style.BRIGHT}[{iter_num}/{CONFIG["max_iters"]}]"
+				f"{Fore.WHITE}{Style.DIM}[{iter_num}/{CONFIG["max_iters"]}]"
 				f"{Fore.RESET}{Style.RESET_ALL}:",
 				f"train loss {Fore.WHITE}{Style.BRIGHT}{losses["train"]:.4f}"
 				f"{Fore.RESET}{Style.RESET_ALL},",
@@ -346,7 +346,7 @@ while training_loop:
 				f"{Fore.RESET}{Style.RESET_ALL},",
 				f"lr {Fore.WHITE}{Style.BRIGHT}{lr:.7f}"
 				f"{Fore.RESET}{Style.RESET_ALL},",
-				f"time took {Fore.BLACK}{Style.BRIGHT}{calc_total_time(eval_dt)}",
+				f"time took {Fore.WHITE}{Style.DIM}{calc_total_time(eval_dt)}",
 				filename=TXT_SAVE_PATH
 			)
 
@@ -398,13 +398,13 @@ while training_loop:
 
 			kprint(
 				f"{Fore.WHITE}{Style.BRIGHT}iter",
-				f"{Fore.BLACK}{Style.BRIGHT}[{iter_num}/{CONFIG["max_iters"]}]"
+				f"{Fore.WHITE}{Style.DIM}[{iter_num}/{CONFIG["max_iters"]}]"
 				f"{Fore.RESET}{Style.RESET_ALL}:",
 				f"loss {Fore.WHITE}{Style.BRIGHT}{lossf:.4f}"
 				f"{Fore.RESET}{Style.RESET_ALL},",
 				f"mfu {Fore.WHITE}{Style.BRIGHT}{running_mfu*100:.2f}"
 				f"{Fore.RESET}{Style.RESET_ALL},",
-				f"time took {Fore.BLACK}{Style.BRIGHT}{calc_total_time(dt)}",
+				f"time took {Fore.WHITE}{Style.DIM}{calc_total_time(dt)}",
 				filename=TXT_SAVE_PATH
 			)
 			metrics["mfu"].append(running_mfu)
@@ -419,10 +419,10 @@ while training_loop:
 
 	except KeyboardInterrupt:
 		kprint("type", filename=TXT_SAVE_PATH)
-		kprint(f"{Fore.WHITE}{Style.BRIGHT}1. {Fore.BLACK}{Style.BRIGHT}`y` {Style.RESET_ALL}to stop training.", filename=TXT_SAVE_PATH)
-		kprint(f"{Fore.WHITE}{Style.BRIGHT}2. {Fore.BLACK}{Style.BRIGHT}`n` {Style.RESET_ALL}to continue training.", filename=TXT_SAVE_PATH)
-		kprint(f"{Fore.WHITE}{Style.BRIGHT}3. {Fore.BLACK}{Style.BRIGHT}`s` {Style.RESET_ALL}to save model.", filename=TXT_SAVE_PATH)
-		kprint(f"{Fore.WHITE}{Style.BRIGHT}4. {Fore.BLACK}{Style.BRIGHT}`r` {Style.RESET_ALL}to reload config.json.", filename=TXT_SAVE_PATH)
+		kprint(f"{Fore.WHITE}{Style.BRIGHT}1. {Fore.WHITE}{Style.DIM}`y` {Style.RESET_ALL}to stop training.", filename=TXT_SAVE_PATH)
+		kprint(f"{Fore.WHITE}{Style.BRIGHT}2. {Fore.WHITE}{Style.DIM}`n` {Style.RESET_ALL}to continue training.", filename=TXT_SAVE_PATH)
+		kprint(f"{Fore.WHITE}{Style.BRIGHT}3. {Fore.WHITE}{Style.DIM}`s` {Style.RESET_ALL}to save model.", filename=TXT_SAVE_PATH)
+		kprint(f"{Fore.WHITE}{Style.BRIGHT}4. {Fore.WHITE}{Style.DIM}`r` {Style.RESET_ALL}to reload config.json.", filename=TXT_SAVE_PATH)
 
 		while True:
 			inp = input("> ")
