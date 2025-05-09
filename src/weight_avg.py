@@ -16,7 +16,7 @@ init(autoreset=True)
 
 parser = argparse.ArgumentParser(description="Average checkpoint weights")
 parser.add_argument("-n", help="Load last `n` checkpoints", type=int, required=True)
-parser.add_argument("-s", help="Step diff b\\w each checkpoint", type=int, required=True)
+parser.add_argument("-s", help="Step diff b/w each checkpoint", type=int, required=True)
 parser.add_argument("-p", help="Checkpoints path", type=str, required=True)
 parser.add_argument("-o", help="Outpath for the averaged model", type=str, required=True)
 args = parser.parse_args()
@@ -39,7 +39,7 @@ all_checkpoints = [int(i[1:-4]) for i in os.listdir(args.p) if i.startswith("s")
 all_checkpoints.sort()
 all_checkpoints.reverse()
 
-needed_checkpoints = [f"{args.p}\\s{i}.bin" for i in all_checkpoints if i % args.s == 0][:args.n]
+needed_checkpoints = [f"{args.p}/s{i}.bin" for i in all_checkpoints if i % args.s == 0][:args.n]
 del all_checkpoints
 
 # load all state dicts and hyperparams

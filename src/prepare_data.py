@@ -36,10 +36,10 @@ def prepare_data(encoded_data, path="data", data_division=1):
 	)
 
 	# save data
-	pandas.DataFrame({"tok": train_data}).to_parquet(f"{path}\\train.parquet", engine="pyarrow")
-	pandas.DataFrame({"tok": val_data}).to_parquet(f"{path}\\val.parquet", engine="pyarrow") if val_tokens > 0 else None
+	pandas.DataFrame({"tok": train_data}).to_parquet(f"{path}/train.parquet", engine="pyarrow")
+	pandas.DataFrame({"tok": val_data}).to_parquet(f"{path}/val.parquet", engine="pyarrow") if val_tokens > 0 else None
 
-CONFIG_PATH = sys.argv[1] if len(sys.argv) > 1 else "scripts\\prep_data_config.json"
+CONFIG_PATH = sys.argv[1] if len(sys.argv) > 1 else "scripts/prep_data_config.json"
 with open(CONFIG_PATH, "r", encoding="utf-8") as f:
 	CONFIG = json.load(f)
 

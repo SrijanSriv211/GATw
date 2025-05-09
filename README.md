@@ -13,21 +13,21 @@ This is how `scripts\config.json` should look-like
 ```json
 {
 	"load_from_file": true,
-	"train_data": "bin\\train.bin",
-	"val_data": "bin\\val.bin",
+	"train_data": "bin/train.bin",
+	"val_data": "bin/val.bin",
 	"init_from": "scratch",
 
 	"checkpoints": {
-		"path": "bin\\checkpoints",
+		"path": "bin/checkpoints",
 		"interval": 100
 	},
-	"save_path": "bin\\GATw.bin",
+	"save_path": "bin/GATw.bin",
 
 	"max_iters": 10000,
 	"eval_interval": 100,
 	"log_interval": 10,
 	"eval_iters": 100,
-	"encoder_path": "bin\\cl4k.bin",
+	"encoder_path": "bin/cl4k.bin",
 	"gen_interval": 500,
 	"gen_iters": 3,
 
@@ -63,11 +63,11 @@ This is how `scripts\config.json` should look-like
 This is how `scripts\enc_config.json` should look like:
 ```json
 {
-	"dataset_path": "data\\data.txt",
+	"dataset_path": "data/data.txt",
 	"merge_vocab_size": 2043,
 	"text_range": 50000000,
 	"special_tokens": ["<|sot|>", "<|eot|>", "<|pad|>", "<|sep|>", "<|reason|>"],
-	"outpath": "bin\\cl2k.bin"
+	"outpath": "bin/cl2k.bin"
 }
 ```
 
@@ -75,8 +75,8 @@ This is how `scripts\enc_config.json` should look like:
 And this is how `scripts\prep_data_config.json` should look like:
 ```json
 {
-	"enc_path": "bin\\cl2k.bin",
-	"dataset_path": "data\\base",
+	"enc_path": "bin/cl2k.bin",
+	"dataset_path": "data/base",
 	"outpath": "bin",
 	"data_division": 0.8,
 	"distribution": null

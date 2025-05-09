@@ -21,13 +21,13 @@ import torch.amp, torch, json, sys
 warnings.filterwarnings("ignore", category=FutureWarning)
 init(autoreset=True)
 
-CONFIG_PATH = sys.argv[1] if len(sys.argv) > 1 else "scripts\\config.json"
+CONFIG_PATH = sys.argv[1] if len(sys.argv) > 1 else "scripts/config.json"
 with open(CONFIG_PATH, "r", encoding="utf-8") as f:
 	CONFIG = json.load(f)
 SAVE_PATH = Path(CONFIG["save_path"])
 TXT_SAVE_PATH = list(SAVE_PATH.parts)
 TXT_SAVE_PATH[-1] = SAVE_PATH.stem
-TXT_SAVE_PATH = "\\".join(TXT_SAVE_PATH) + ".txt"
+TXT_SAVE_PATH = "/".join(TXT_SAVE_PATH) + ".txt"
 
 if CONFIG["init_from"] == "scratch":
 	with open(TXT_SAVE_PATH, "w", encoding="utf-8") as f:
@@ -185,7 +185,7 @@ def _load_data(path):
 			files = os.listdir(path)
 			random.shuffle(files)
 
-		with open(f"{path}\\{files[0]}" if not CONFIG["load_from_file"] else path, "rb") as f:
+		with open(f"{path}/{files[0]}" if not CONFIG["load_from_file"] else path, "rb") as f:
 			return pickle.load(f)
 
 # data loading
@@ -201,27 +201,22 @@ def get_batch(split):
 
 	# get `block_size + 4` length of data for each batch
 	for i in ix:
-		print(i.item())
-		print(data[i])
-	# 	k[i.item()] = data[i]
+		k[i.item()] = data[i]
 
-	# 	# `CONFIG["block_size"] + 4` to ensure that `k` is always greater than block_size
-	# 	c = 1
-	# 	while len(k[i.item()]) < CONFIG["block_size"]+4:
-	# 		k[i.item()] = torch.cat((k[i.item()], data[0] if i+c >= len(data) else data[i+c]))
-	# 		c += 1
+		# `CONFIG["block_size"] + 4` to ensure that `k` is always greater than block_size
+		c = 1
+		while len(k[i.item()]) < CONFIG["block_size"]+4:
+			k[i.item()] = torch.cat((k[i.item()], data[0] if i+c >= len(data) else data[i+c]))
+			c += 1
 
-	# # randomly select starting position
-	# p = {i: random.randint(0, len(k[i]) - CONFIG["block_size"] - 1) if random.randint(0, 1) == 1 else 0 for i in k}
+	# randomly select starting position
+	p = {i: random.randint(0, len(k[i]) - CONFIG["block_size"] - 1) if random.randint(0, 2) == 0 else 0 for i in k}
 
-	# # prepare the train and val dataset
-	# x = torch.stack([k[i][p[i] : p[i] + CONFIG["block_size"]] for i in k])
-	# y = torch.stack([k[i][p[i] + 1 : p[i] + CONFIG["block_size"] + 1] for i in k])
-	# x, y = x.to(device), y.to(device)
-	# return x, y
-
-get_batch("train")
-sys.exit()
+	# prepare the train and val dataset
+	x = torch.stack([k[i][p[i] : p[i] + CONFIG["block_size"]] for i in k])
+	y = torch.stack([k[i][p[i] + 1 : p[i] + CONFIG["block_size"] + 1] for i in k])
+	x, y = x.to(device), y.to(device)
+	return x, y
 
 # helps estimate an arbitrarily accurate loss over either split using many batches
 @torch.no_grad()
@@ -323,7 +318,7 @@ while training_loop:
 				os.mkdir(CONFIG["checkpoints"]["path"])
 
 			kprint(f"saved checkpoint at step {Fore.WHITE}{Style.BRIGHT}{iter_num}", filename=TXT_SAVE_PATH)
-			torch.save(get_trained_model(model, optimizer), f"{CONFIG["checkpoints"]["path"]}\\s{iter_num}.bin")
+			torch.save(get_trained_model(model, optimizer), f"{CONFIG["checkpoints"]["path"]}/s{iter_num}.bin")
 
 		# generate some sample text
 		if CONFIG["gen_interval"] != None and iter_num > 0 and iter_num % CONFIG["gen_interval"] == 0:
