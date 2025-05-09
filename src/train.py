@@ -326,7 +326,7 @@ while training_loop:
 
 			for _ in range(CONFIG["gen_iters"]):
 				out = enc.decode(training_sample.generate(None, length=256))
-				kprint(f"{Style.BRIGHT}{Fore.BLACK}```s{iter_num}.bin\n{out}\n```\n", filename=TXT_SAVE_PATH)
+				kprint(f"{Fore.WHITE}{Style.DIM}```s{iter_num}.bin\n{out}\n```\n", filename=TXT_SAVE_PATH)
 
 		# evaluate the loss on train/val sets and write checkpoints
 		if iter_num > 0 and iter_num % CONFIG["eval_interval"] == 0:
