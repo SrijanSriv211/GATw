@@ -40,4 +40,4 @@ test = [
 for txt in test:
 	enctxt = enc.encode(txt, allowed_special="all") if txt != None else txt
 	out = enc.decode(s.generate(enctxt, length=256))
-	print(f"{Style.WHITE}{Fore.DIM}```\n{out}\n```\n")
+	print(f"{Fore.WHITE}{Style.DIM}```\n{out}\n```\n")
