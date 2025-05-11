@@ -75,10 +75,9 @@ This is how `scripts\enc_config.json` should look like:
 And this is how `scripts\prep_data_config.json` should look like:
 ```json
 {
-	"enc_path": "bin/cl2k.bin",
-	"dataset_path": "data/base",
-	"outpath": "bin",
-	"data_division": 0.8,
-	"distribution": null
+	"enc_path": "bin/cl4k.bin",
+	"dataset_path": "data/base/json",
+	"outpath": "data/base",
+	"data_division": 0.8
 }
 ```
