@@ -5,20 +5,10 @@ from encoder.bytepair import Encoder
 from contextlib import nullcontext
 from rich.progress import track
 from pathlib import Path
-import warnings, pickle, pandas, random, time, math, os
+import pandas, random, time, math, os
 import torch._inductor.config as config
 import torch.amp, torch, json, sys
 
-# supress pytorch's future warning:
-# You are using `torch.load` with `weights_only=False` (the current default value), which uses the default pickle module implicitly.
-# It is possible to construct malicious pickle data which will execute arbitrary code during unpickling
-# (See https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models for more details).
-# In a future release, the default value for `weights_only` will be flipped to `True`.
-# This limits the functions that could be executed during unpickling.
-# Arbitrary objects will no longer be allowed to be loaded via this mode unless they are explicitly allowlisted by the user via `torch.serialization.add_safe_globals`.
-# We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file.
-# Please open an issue on GitHub for any issues related to this experimental feature.
-warnings.filterwarnings("ignore", category=FutureWarning)
 init(autoreset=True)
 
 CONFIG_PATH = sys.argv[1] if len(sys.argv) > 1 else "scripts/config.json"
@@ -136,12 +126,15 @@ if CONFIG["init_from"] == "scratch":
 elif CONFIG["init_from"].startswith("pretrained,"):
 	model, optimizer, hyperparams, iter_num, best_loss, metrics = from_pretrained(torch.load(CONFIG["init_from"][11:]))
 
+color = f"{Fore.LIGHTGREEN_EX}{Style.BRIGHT}" if CONFIG["use_rope"] else f"{Fore.LIGHTRED_EX}{Style.BRIGHT}"
+kprint("using RoPE:", f"{color}{CONFIG["use_rope"]}", filename=TXT_SAVE_PATH)
+
 # load all the files
 train_data, val_data = None, None
 train_data_len, val_data_len = 0, 0
 if CONFIG["load_from_file"]:
-	train_data = [torch.tensor(i, dtype=torch.long) for i in pandas.read_parquet(CONFIG["train_data"], engine="pyarrow")["tok"].tolist()]
-	val_data = [torch.tensor(i, dtype=torch.long) for i in pandas.read_parquet(CONFIG["val_data"], engine="pyarrow")["tok"].tolist()]
+	train_data = pandas.read_parquet(CONFIG["train_data"], engine="pyarrow")["tok"].tolist()
+	val_data = pandas.read_parquet(CONFIG["val_data"], engine="pyarrow")["tok"].tolist()
 
 	for i in train_data:
 		train_data_len += len(i)
@@ -149,11 +142,26 @@ if CONFIG["load_from_file"]:
 	for i in val_data:
 		val_data_len += len(i)
 
+else:
+	for file in os.listdir(CONFIG["train_data"]):
+		train_data = pandas.read_parquet(f"{CONFIG["train_data"]}/{file}", engine="pyarrow")["tok"].tolist()
+
+		for i in train_data:
+			train_data_len += len(i)
+		train_data = None
+
+	for file in os.listdir(CONFIG["val_data"]):
+		train_data = pandas.read_parquet(f"{CONFIG["val_data"]}/{file}", engine="pyarrow")["tok"].tolist()
+
+		for i in val_data:
+			val_data_len += len(i)
+		train_data = None
+
+	del train_data, val_data
+
 data_len = train_data_len + val_data_len
 
 # print the number of tokens
-color = f"{Fore.LIGHTGREEN_EX}{Style.BRIGHT}" if CONFIG["use_rope"] else f"{Fore.LIGHTRED_EX}{Style.BRIGHT}"
-kprint("using RoPE:", f"{color}{CONFIG["use_rope"]}", filename=TXT_SAVE_PATH)
 kprint(f"{Fore.WHITE}{Style.BRIGHT}{(data_len/1e6)}M", "total tokens", filename=TXT_SAVE_PATH)
 kprint(
 	f"{Fore.WHITE}{Style.BRIGHT}{(len(train_data)/1e6)}M", "train entries,",
@@ -181,12 +189,9 @@ def _load_data(path):
 		return train_data if path == CONFIG["train_data"] else val_data
 
 	else:
-		if not CONFIG["load_from_file"]:
-			files = os.listdir(path)
-			random.shuffle(files)
-
-		with open(f"{path}/{files[0]}" if not CONFIG["load_from_file"] else path, "rb") as f:
-			return pickle.load(f)
+		files = os.listdir(path)
+		i = random.randint(0, len(files) - 1)
+		return pandas.read_parquet(f"{path}/{files[i]}", engine="pyarrow")["tok"].tolist()
 
 # data loading
 # generate a small batch of data of inputs x and targets y
@@ -201,12 +206,12 @@ def get_batch(split):
 
 	# get `block_size + 4` length of data for each batch
 	for i in ix:
-		k[i.item()] = data[i]
+		k[i] = torch.tensor(data[i], dtype=torch.long)
 
 		# `CONFIG["block_size"] + 4` to ensure that `k` is always greater than block_size
 		c = 1
-		while len(k[i.item()]) < CONFIG["block_size"]+4:
-			k[i.item()] = torch.cat((k[i.item()], data[0] if i+c >= len(data) else data[i+c]))
+		while len(k[i]) < CONFIG["block_size"]+4:
+			k[i] = torch.cat((k[i], torch.tensor(data[0], dtype=torch.long) if i+c >= len(data) else torch.tensor(data[i+c], dtype=torch.long)))
 			c += 1
 
 	# randomly select starting position
