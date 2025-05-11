@@ -3,8 +3,6 @@ from encoder.bytepair import Encoder
 from models.gpt import sample
 import warnings, torch, sys
 
-init(autoreset = True)
-
 # supress pytorch's future warning:
 # You are using `torch.load` with `weights_only=False` (the current default value), which uses the default pickle module implicitly.
 # It is possible to construct malicious pickle data which will execute arbitrary code during unpickling
@@ -15,6 +13,7 @@ init(autoreset = True)
 # We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file.
 # Please open an issue on GitHub for any issues related to this experimental feature.
 warnings.filterwarnings("ignore", category=FutureWarning)
+init(autoreset = True)
 
 s = sample()
 s.load(torch.load(sys.argv[1]), True)
