@@ -129,49 +129,47 @@ elif CONFIG["init_from"].startswith("pretrained,"):
 color = f"{Fore.LIGHTGREEN_EX}{Style.BRIGHT}" if CONFIG["use_rope"] else f"{Fore.LIGHTRED_EX}{Style.BRIGHT}"
 kprint("using RoPE:", f"{color}{CONFIG["use_rope"]}", filename=TXT_SAVE_PATH)
 
-# load all the files
-train_data, val_data = None, None
-train_data_len, val_data_len = 0, 0
+# useless stuff
+# just load all the datasets to see how much tokens are their to train the model on
+def load_dataset(path, file=None):
+	data = pandas.read_parquet(f"{path}/{file}" if file else path, engine="pyarrow")["tok"].tolist()
+	total_tokens = 0
+
+	for i in data:
+		total_tokens += len(i)
+
+	return data, total_tokens, len(data)
+
+(train_data, val_data), (train_data_len, val_data_len), (total_train_entries, total_val_entries) = (None, None), (0, 0), (0, 0)
 if CONFIG["load_from_file"]:
-	train_data = pandas.read_parquet(CONFIG["train_data"], engine="pyarrow")["tok"].tolist()
-	val_data = pandas.read_parquet(CONFIG["val_data"], engine="pyarrow")["tok"].tolist()
-
-	for i in train_data:
-		train_data_len += len(i)
-
-	for i in val_data:
-		val_data_len += len(i)
+	train_data, train_data_len, total_train_entries = load_dataset(CONFIG["train_data"])
+	val_data, val_data_len, total_val_entries = load_dataset(CONFIG["val_data"])
 
 else:
-	for file in os.listdir(CONFIG["train_data"]):
-		train_data = pandas.read_parquet(f"{CONFIG["train_data"]}/{file}", engine="pyarrow")["tok"].tolist()
+	for split in ["train_data", "val_data"]:
+		for file in os.listdir(CONFIG[split]):
+			_, a, b = load_dataset(CONFIG[split], file)
 
-		for i in train_data:
-			train_data_len += len(i)
-		train_data = None
+			if split == "train_data":
+				train_data_len += a
+				total_train_entries += b
 
-	for file in os.listdir(CONFIG["val_data"]):
-		train_data = pandas.read_parquet(f"{CONFIG["val_data"]}/{file}", engine="pyarrow")["tok"].tolist()
-
-		for i in val_data:
-			val_data_len += len(i)
-		train_data = None
-
-	del train_data, val_data
-
-data_len = train_data_len + val_data_len
+			else:
+				val_data_len += a
+				total_val_entries += b
 
 # print the number of tokens
-kprint(f"{Fore.WHITE}{Style.BRIGHT}{(data_len/1e6)}M", "total tokens", filename=TXT_SAVE_PATH)
+kprint(f"{Fore.WHITE}{Style.BRIGHT}{((train_data_len + val_data_len)/1e6)}M", "total tokens", filename=TXT_SAVE_PATH)
 kprint(
-	f"{Fore.WHITE}{Style.BRIGHT}{(len(train_data)/1e6)}M", "train entries,",
-	f"{Fore.WHITE}{Style.BRIGHT}{(len(val_data)/1e6)}M", "test entries\n"
+	f"{Fore.WHITE}{Style.BRIGHT}{(total_train_entries/1e6)}M", "train entries,",
+	f"{Fore.WHITE}{Style.BRIGHT}{(total_val_entries/1e6)}M", "val entries\n"
 	f"{Fore.WHITE}{Style.BRIGHT}{(train_data_len/1e6)}M", "train tokens,",
-	f"{Fore.WHITE}{Style.BRIGHT}{(val_data_len/1e6)}M", "test tokens",
-	f"   {Fore.WHITE}{Style.DIM}(using train tokens as test tokens)" if train_data_len == val_data_len else "",
+	f"{Fore.WHITE}{Style.BRIGHT}{(val_data_len/1e6)}M", "val tokens",
+	f"   {Fore.WHITE}{Style.DIM}(using train tokens as val tokens)" if train_data_len == val_data_len else "",
 	filename=TXT_SAVE_PATH
 )
-del data_len, train_data_len, val_data_len # these are useless vars, delete them
+# these are useless vars, delete them
+del train_data_len, val_data_len, total_train_entries, total_val_entries, a, b
 
 def get_trained_model(model, optimizer):
 	return {
