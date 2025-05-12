@@ -33,10 +33,11 @@ for file in files:
 	with open(f"{path}/{file}", "r", encoding="utf-8") as f:
 		obj = json.load(f)
 
-		for k in track(obj, f"{Fore.WHITE}{Style.BRIGHT}encoding {Fore.WHITE}{Style.DIM}{file}{Style.RESET_ALL}"):
-			data.append(enc.encode(k, allowed_special="all"))
-			total_chars += len(k)
-			unique_chars.update(set(k))
+	for k in track(obj, f"{Fore.WHITE}{Style.BRIGHT}encoding {Fore.WHITE}{Style.DIM}{file}{Style.RESET_ALL}"):
+		data.append(enc.encode(k, allowed_special="all"))
+		total_chars += len(k)
+		unique_chars.update(set(k))
+	del obj
 
     # print the number of tokens
 	total_tokens = 0
@@ -62,15 +63,35 @@ for file in files:
 	for i in val_data:
 		val_tokens += len(i)
 
+	total_train_entries += len(train_data)
+	total_val_entries += len(val_data)
+	total_train_toks += train_tokens
+	total_val_toks += val_tokens
+
 	print(
 		f"{(len(train_data)/1e6)}M train entries,", f"{(train_tokens/1e6)}M train tokens,",
 		f"{(len(val_data)/1e6)}M val entries,", f"{(val_tokens/1e6)}M val tokens"
 	)
-	print()
 
 	# save data
-	pandas.DataFrame({"tok": train_data}).to_parquet(f"{CONFIG["outpath"]}/train/{Path(file).stem}.parquet", engine="pyarrow")
-	pandas.DataFrame({"tok": val_data}).to_parquet(f"{CONFIG["outpath"]}/val/{Path(file).stem}.parquet", engine="pyarrow") if val_tokens > 0 else None
+	if CONFIG["n_tokens_in_each_dist"] == None:
+		pandas.DataFrame({"tok": train_data}).to_parquet(f"{CONFIG["outpath"]}/train/{Path(file).stem}.parquet", engine="pyarrow")
+		pandas.DataFrame({"tok": val_data}).to_parquet(f"{CONFIG["outpath"]}/val/{Path(file).stem}.parquet", engine="pyarrow") if val_tokens > 0 else None
+
+	else:
+		for encoded_data in [(train_data, "train"), (val_data, "val")]:
+			a, b, c = 0, 1, []
+			for i, x in enumerate(encoded_data[0]):
+				if a >= CONFIG["n_tokens_in_each_dist"] or i >= len(encoded_data[0])-1:
+					print(f"{CONFIG["outpath"]}/{encoded_data[1]}/{Path(file).stem}_{b}.parquet")
+					pandas.DataFrame({"tok": c}).to_parquet(f"{CONFIG["outpath"]}/{encoded_data[1]}/{Path(file).stem}_{b}.parquet", engine="pyarrow")
+					a = 0
+					b += 1
+					c = []
+
+				c.append(x)
+				a += len(x)
+	print()
 
 unique_chars = len(unique_chars)
 print(
@@ -78,6 +99,6 @@ print(
 	f"{((total_train_toks + total_val_toks)/1e6)}M total tokens,", f"{(total_chars/1e6)}M total chars,", f"{unique_chars} unique chars"
 )
 print(
-	f"{(len(total_train_entries)/1e6)}M train entries,", f"{(total_train_toks/1e6)}M train tokens,",
-	f"{(len(total_val_entries)/1e6)}M val entries,", f"{(total_val_toks/1e6)}M val tokens"
+	f"{(total_train_entries/1e6)}M train entries,", f"{(total_train_toks/1e6)}M train tokens,",
+	f"{(total_val_entries/1e6)}M val entries,", f"{(total_val_toks/1e6)}M val tokens"
 )

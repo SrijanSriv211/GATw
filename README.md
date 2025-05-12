@@ -78,6 +78,7 @@ And this is how `scripts\prep_data_config.json` should look like:
 	"enc_path": "bin/cl4k.bin",
 	"dataset_path": "data/base/json",
 	"outpath": "data/base",
-	"data_division": 0.8
+	"data_division": 0.8,
+	"n_tokens_in_each_dist": null
 }
 ```
