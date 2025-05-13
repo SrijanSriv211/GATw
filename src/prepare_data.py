@@ -2,20 +2,38 @@ from encoder.bytepair import Encoder
 from rich.progress import track
 from colorama import Style, Fore, init
 from pathlib import Path
-import pandas, torch, json, sys, os
+import argparse, numpy, json, os
 
 init(autoreset=True)
 
-CONFIG_PATH = sys.argv[1] if len(sys.argv) > 1 else "scripts/prep_data_config.json"
-with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-	CONFIG = json.load(f)
+parser = argparse.ArgumentParser(description="A powerful text encryption and decryption program.")
+parser.add_argument("-i", help="dataset path", required=True)
+parser.add_argument("-o", help="output path", required=True)
+parser.add_argument("-e", help="encoder path", required=True)
+parser.add_argument("-d", help="train-val data division ratio", type=float, default=0.9)
+parser.add_argument("-s", help="max toks in each data shard", type=int, default=250_000_000)
+args = parser.parse_args()
 
+CONFIG = {
+	"dataset_path": args.i,
+	"outpath": args.o,
+	"enc_path": args.e,
+	"data_division": args.d,
+	"toks_per_shard": args.s
+}
+
+"""
+Create train-val folders
+"""
 if not os.path.isdir(os.path.join(CONFIG["outpath"], "train")):
 	os.mkdir(os.path.join(CONFIG["outpath"], "train"))
 
 if 0 < CONFIG["data_division"] < 1 and not os.path.isdir(os.path.join(CONFIG["outpath"], "val")):
 	os.mkdir(os.path.join(CONFIG["outpath"], "val"))
 
+"""
+Load encoder
+"""
 enc = Encoder()
 enc.load(CONFIG["enc_path"])
 data = []
@@ -23,82 +41,100 @@ data = []
 """
 Pretraining dataset
 """
-path = CONFIG["dataset_path"]
-files = os.listdir(path)
+dataset_files = [os.path.join(CONFIG["dataset_path"], i) for i in os.listdir(CONFIG["dataset_path"])]
+dataset_files = sorted(dataset_files, key=os.path.getsize)
 
-total_train_entries, total_train_toks, total_val_entries, total_val_toks = 0, 0, 0, 0
-total_chars = 0
-unique_chars = set()
-for file in files:
-	with open(f"{path}/{file}", "r", encoding="utf-8") as f:
-		obj = json.load(f)
+# python src/prepare_data.py -i data/base/json -o data/base -e bin/cl4k.bin
+total_unique_chars, total_chars = 0, 0
+total_train_chars, total_val_chars = 0, 0
+total_train_tokens, total_val_tokens = 0, 0
+no_val = False if 0 < CONFIG["data_division"] < 1 else True
 
-	for k in track(obj, f"{Fore.WHITE}{Style.BRIGHT}encoding {Fore.WHITE}{Style.DIM}{file}{Style.RESET_ALL}"):
-		data.append(enc.encode(k, allowed_special="all"))
-		total_chars += len(k)
-		unique_chars.update(set(k))
-	del obj
+for file in dataset_files:
+	with open(file, "r", encoding="utf-8") as f:
+		train_data = json.load(f)
 
-    # print the number of tokens
-	total_tokens = 0
-	for i in data:
-		total_tokens += len(i)
-	print(f"{(total_tokens/1e6)}M", "total tokens")
+	# get total number chars and total number of unique chars
+	unique_chars = len(set().union(*set().union(*train_data)))
+	num_chars = sum([len(i) for i in train_data])
 
-	# train and test splits
-	train_data, val_data = [], []
-	for i, x in enumerate(data):
-		if 0 < CONFIG["data_division"] < 1 and i % (CONFIG["data_division"] * 10) == 0:
+	# verbose
+	total_chars += num_chars
+	total_unique_chars += unique_chars
+	print(f"{Fore.YELLOW}{Style.BRIGHT}{file}")
+	print(f"{(num_chars/1e6)}M total chars,", f"{unique_chars} unique chars")
+
+	# split val data based on `data_division`
+	if not no_val:
+		val_size = int(num_chars * (1 - CONFIG["data_division"]))
+		val_data, idx, size = [], [], 0
+		for i, x in enumerate(train_data):
+			if size >= val_size:
+				break
+
+			elif i % (CONFIG["data_division"] * 10) != 0:
+				continue
+
 			val_data.append(x)
+			idx.append(i)
+			size += len(x)
 
-		else:
-			train_data.append(x)
-	data = []
+		# remove items from `train_data` which are now a part of `val_data`
+		idx.sort(reverse=True)
+		[train_data.pop(i) for i in idx]
 
-    # print the number of tokens
-	train_tokens, val_tokens = 0, 0
-	for i in train_data:
-		train_tokens += len(i)
+		# delete useless vars
+		del val_size, idx, size
 
-	for i in val_data:
-		val_tokens += len(i)
+	# verbose
+	train_chars = sum([len(i) for i in train_data])
+	total_train_chars += train_chars
 
-	total_train_entries += len(train_data)
-	total_val_entries += len(val_data)
-	total_train_toks += train_tokens
-	total_val_toks += val_tokens
+	if not no_val:
+		val_chars = sum([len(i) for i in val_data])
+		total_val_chars += val_chars
 
-	print(
-		f"{(len(train_data)/1e6)}M train entries,", f"{(train_tokens/1e6)}M train tokens,",
-		f"{(len(val_data)/1e6)}M val entries,", f"{(val_tokens/1e6)}M val tokens"
-	)
+	print(f"{(train_chars/1e6)}M train chars" + f", {(val_chars/1e6)}M val chars" if not no_val else "")
 
-	# save data
-	if CONFIG["n_tokens_in_each_dist"] == None:
-		pandas.DataFrame({"tok": train_data}).to_parquet(f"{CONFIG["outpath"]}/train/{Path(file).stem}.parquet", engine="pyarrow")
-		pandas.DataFrame({"tok": val_data}).to_parquet(f"{CONFIG["outpath"]}/val/{Path(file).stem}.parquet", engine="pyarrow") if val_tokens > 0 else None
+	# encode data
+	train_desc = f"{Fore.WHITE}{Style.BRIGHT}encoding {Fore.WHITE}{Style.DIM}train chars{Style.RESET_ALL}"
+	train_data = [enc.encode(data, allowed_special="all") for data in track(train_data, train_desc)]
 
-	else:
-		for encoded_data in [(train_data, "train"), (val_data, "val")]:
-			a, b, c = 0, 1, []
-			for i, x in enumerate(encoded_data[0]):
-				if a >= CONFIG["n_tokens_in_each_dist"] or i >= len(encoded_data[0])-1:
-					print(f"{CONFIG["outpath"]}/{encoded_data[1]}/{Path(file).stem}_{b}.parquet")
-					pandas.DataFrame({"tok": c}).to_parquet(f"{CONFIG["outpath"]}/{encoded_data[1]}/{Path(file).stem}_{b}.parquet", engine="pyarrow")
-					a = 0
-					b += 1
-					c = []
+	if not no_val:
+		val_desc = f"{Fore.WHITE}{Style.BRIGHT}encoding {Fore.WHITE}{Style.DIM}val chars{Style.RESET_ALL}"
+		val_data = [enc.encode(data, allowed_special="all") for data in track(val_data, val_desc)]
 
-				c.append(x)
-				a += len(x)
+	# verbose
+	train_tokens = sum([len(i) for i in train_data])
+	total_train_tokens += train_tokens
+
+	if not no_val:
+		val_tokens = sum([len(i) for i in val_data])
+		total_val_tokens += val_tokens
+
+	print(f"{(train_tokens/1e6)}M train tokens" + f", {(val_tokens/1e6)}M val tokens" if not no_val else "")
+
+	# save
+	for encoded_data in [(train_data, "train"), (val_data, "val") if not no_val else None]:
+		if not encoded_data:
+			break
+
+		a, b, c = 0, 1, []
+		for i, x in enumerate(encoded_data[0]):
+			c.append(x)
+			a += len(x)
+
+			if a >= CONFIG["toks_per_shard"] or i >= len(encoded_data[0])-1:
+				outpath = f"{CONFIG["outpath"]}/{encoded_data[1]}/{Path(file).stem}_{b}.bin"
+				print(outpath)
+
+				pad = len(max(c, key=len))
+				numpy.array([i + [0]*(pad-len(i)) for i in c]).tofile(outpath)
+
+				b += 1
+				a, c = 0, []
 	print()
 
-unique_chars = len(unique_chars)
-print(
-	f"{((total_train_entries + total_val_entries)/1e6)}M total entries,",
-	f"{((total_train_toks + total_val_toks)/1e6)}M total tokens,", f"{(total_chars/1e6)}M total chars,", f"{unique_chars} unique chars"
-)
-print(
-	f"{(total_train_entries/1e6)}M train entries,", f"{(total_train_toks/1e6)}M train tokens,",
-	f"{(total_val_entries/1e6)}M val entries,", f"{(total_val_toks/1e6)}M val tokens"
-)
+print(f"{(total_chars/1e6)}M total chars,", f"{total_unique_chars} total unique chars")
+print(f"{(total_train_chars/1e6)}M total train chars" + f", {(total_val_chars/1e6)}M total val chars" if not no_val else "")
+print(f"{(total_train_tokens/1e6)}M total train tokens" + f", {(total_val_tokens/1e6)}M total val tokens" if not no_val else "")
