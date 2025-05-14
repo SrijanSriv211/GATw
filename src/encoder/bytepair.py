@@ -65,15 +65,21 @@ class Encoder:
 			text = f.read()
 
 		print(
-			"encoding text with", f"{Fore.WHITE}{Style.BRIGHT}{len(text)/1e6}M", "characters and",
+			"encoding text with", f"{Fore.WHITE}{Style.BRIGHT}{len(text)/1e6}M", "total characters and",
 			f"{Fore.WHITE}{Style.BRIGHT}{len(set(text))}", "unique characters"
 		)
+
+		if text_range is not None:
+			print(
+				"ranged text has", f"{Fore.WHITE}{Style.BRIGHT}{len(text[:text_range])/1e6}M", "characters and",
+				f"{Fore.WHITE}{Style.BRIGHT}{len(set(text[:text_range]))}", "unique characters"
+			)
 
 		# split the text up into text chunks
 		text_chunks = regex.findall(self.compiled_pattern, text if text_range is None else text[:text_range])
 		del text
 
-		print(f"encoding text chunks... {Fore.BLACK}{Style.BRIGHT}(takes a ~minute)")
+		print(f"encoding text chunks... {Fore.WHITE}{Style.DIM}(takes a ~minute)")
 
 		# input text preprocessing
 		ids = [list(ch.encode("utf-8")) for ch in text_chunks]
@@ -116,13 +122,13 @@ class Encoder:
 			current_print_time = time.time()
 			print(
 				f"{Fore.WHITE}{Style.BRIGHT}merge",
-				f"{Fore.BLACK}{Style.BRIGHT}[{i+1}/{n_merges}]"
+				f"{Fore.WHITE}{Style.DIM}[{i+1}/{n_merges}]"
 				":",
 				f"{pair} -> {idx}",
 				f"{Fore.WHITE}{Style.DIM}({self.vocab[idx]})",
 				f"had {Fore.WHITE}{Style.BRIGHT}{stats[pair]}{Style.RESET_ALL} occurrences"
 				f"{Style.RESET_ALL},",
-				f"{Fore.BLACK}{Style.BRIGHT}time taken: {calc_total_time(current_print_time-last_print_time)}"
+				f"{Fore.WHITE}{Style.DIM}time taken: {calc_total_time(current_print_time-last_print_time)}"
 			)
 			last_print_time = current_print_time
 
