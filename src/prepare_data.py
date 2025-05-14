@@ -11,7 +11,7 @@ parser.add_argument("-i", help="dataset path", required=True)
 parser.add_argument("-o", help="output path", required=True)
 parser.add_argument("-e", help="encoder path", required=True)
 parser.add_argument("-d", help="train-val data division ratio", type=float, default=0.9)
-parser.add_argument("-s", help="max toks in each data shard", type=int, default=55_000_000)
+parser.add_argument("-s", help="max chars in each data shard", type=int, default=2_000_000_000)
 args = parser.parse_args()
 
 CONFIG = {
@@ -19,7 +19,7 @@ CONFIG = {
 	"outpath": args.o,
 	"enc_path": args.e,
 	"data_division": args.d,
-	"toks_per_shard": args.s
+	"chars_per_shard": args.s
 }
 
 """
@@ -32,9 +32,8 @@ data = []
 """
 Pretraining dataset
 """
-# dataset_files = [os.path.join(CONFIG["dataset_path"], i) for i in os.listdir(CONFIG["dataset_path"])]
-# dataset_files = sorted(dataset_files, key=os.path.getsize)
-dataset_files = [os.path.join(CONFIG["dataset_path"], i) for i in ["openwebtext.json"]]
+dataset_files = [os.path.join(CONFIG["dataset_path"], i) for i in os.listdir(CONFIG["dataset_path"])]
+dataset_files = sorted(dataset_files, key=os.path.getsize)
 
 # python src/prepare_data.py -i data/base/json -o data/base -e bin/cl4k.bin
 total_unique_chars, total_chars = 0, 0
@@ -44,40 +43,34 @@ lensum = lambda x: sum([len(i) for i in x])
 save_file_idx = [0, 0]
 
 def save_data(data, split, file):
-	if not os.path.isdir(os.path.join(CONFIG["outpath"], split)):
-		os.mkdir(os.path.join(CONFIG["outpath"], split))
+	# if not os.path.isdir(os.path.join(CONFIG["outpath"], split)):
+	# 	os.mkdir(os.path.join(CONFIG["outpath"], split))
+
+	if split == "train": save_file_idx[0] += 1
+	else: save_file_idx[1] += 1
 
 	idx = save_file_idx[0] if split == "train" else save_file_idx[1]
 	outpath = f"{CONFIG["outpath"]}/{split}/{Path(file).stem}" + (f"_{idx}" if idx > 0 else "") + ".bin"
 	print(outpath)
 
+	print(lensum(data))
 	pad = len(max(data, key=len))
-	numpy.array([i + [-1]*(pad-len(i)) for i in data]).tofile(outpath)
+	data = numpy.array([i + [-1]*(pad-len(i)) for i in data])
+	print(lensum(data))
+	# data.tofile(outpath)
 
-def prepare_data(data, split, file):
+def encode_data(data, split, file):
 	global save_file_idx
 	num_chars = lensum(data)
 
-	k, l = [0], 0
 	for i, x in enumerate(track(data, f"{Fore.WHITE}{Style.BRIGHT}encoding {Fore.WHITE}{Style.DIM}{split} chars{Style.RESET_ALL}")):
 		data[i] = enc.encode(x, allowed_special="all")
-		l += len(data[i])
-
-		if l >= CONFIG["toks_per_shard"] or i >= len(data)-1:
-			k.append(i+1)
-			l = 0
-	k = list(zip(k, k[1:]))
 
 	num_tokens = lensum(data)
 	print(f"{(num_chars/1e6)}M {split} chars,", f"{(num_tokens/1e6)}M {split} tokens")
 
 	# save
-	for i in k:
-		if split == "train": save_file_idx[0] += 1
-		else: save_file_idx[1] += 1
-
-		condition = len(k) > 1 or lensum(data[i[0]:i[1]]) >= CONFIG["toks_per_shard"]
-		save_data(data[i[0]:i[1]] if condition else data, split, file)
+	save_data(data, split, file)
 	return num_chars, num_tokens
 
 # split train and val data based on `data_division`
@@ -120,7 +113,7 @@ for file in dataset_files:
 	chunk_ranges = [0]
 	for i, x in enumerate(train_data):
 		size += len(x)
-		if size > 250_000_000 or i+1 >= len(train_data):
+		if size > CONFIG["chars_per_shard"] or i+1 >= len(train_data):
 			chunk_ranges.append(i+1)
 			size = 0
 	chunk_ranges = list(zip(chunk_ranges, chunk_ranges[1:]))
@@ -133,8 +126,8 @@ for file in dataset_files:
 
 		# split and save
 		val_data = split_data(train_data)
-		num_train_chars, num_train_tokens = prepare_data(train_data, "train", file)
-		num_val_chars, num_val_tokens = prepare_data(val_data, "val", file)
+		num_train_chars, num_train_tokens = encode_data(train_data, "train", file)
+		num_val_chars, num_val_tokens = encode_data(val_data, "val", file)
 		print()
 
 		total_train_chars += num_train_chars
