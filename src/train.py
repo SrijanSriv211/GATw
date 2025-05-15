@@ -210,6 +210,7 @@ X, Y = train_data_loader.next_batch() # fetch the very first batch
 start_time = time.time()
 eval_t0 = time.time()
 t0 = time.time()
+t2 = time.time()
 local_iter_num = 0 # number of iterations in the lifetime of this process
 running_mfu = -1.0 if stats["mfu"] == [] else stats["mfu"][-1]
 training_loop = True
@@ -307,6 +308,10 @@ while training_loop:
 		dt = t1 - t0
 		t0 = t1
 		if stats["iter_num"] % CONFIG["log_interval"] == 0:
+			t1 = time.time()
+			dt2 = t1 - t2
+			t2 = t1
+
 			# get loss as float. note: this is a CPU-GPU sync point
 			# scale up to undo the division above, approximating the true total loss (exact would have been a sum)
 			lossf = loss.item() * CONFIG["gradient_accumulation_steps"]
@@ -324,7 +329,7 @@ while training_loop:
 				f"{Fore.RESET}{Style.RESET_ALL},",
 				f"mfu {Fore.WHITE}{Style.BRIGHT}{running_mfu*100:.2f}"
 				f"{Fore.RESET}{Style.RESET_ALL},",
-				f"dt {Fore.WHITE}{Style.DIM}{calc_total_time(dt)}",
+				f"dt {Fore.WHITE}{Style.DIM}{calc_total_time(dt2)}",
 				f"tok/s {Fore.WHITE}{Style.DIM}{toks_per_sec:.2f}",
 				filename=model_log_path
 			)
