@@ -5,43 +5,48 @@ from encoder.bytepair import Encoder
 from contextlib import nullcontext
 from rich.progress import track
 from pathlib import Path
-import pandas, random, time, math, os
+import torch, random, numpy, time, math, os
 import torch._inductor.config as config
-import torch.amp, torch, json, sys
+import torch.amp, json, sys
 
 init(autoreset=True)
 
+# load config
 CONFIG_PATH = sys.argv[1] if len(sys.argv) > 1 else "scripts/config.json"
 with open(CONFIG_PATH, "r", encoding="utf-8") as f:
 	CONFIG = json.load(f)
-SAVE_PATH = Path(CONFIG["save_path"])
-TXT_SAVE_PATH = list(SAVE_PATH.parts)
-TXT_SAVE_PATH[-1] = SAVE_PATH.stem
-TXT_SAVE_PATH = "/".join(TXT_SAVE_PATH) + ".txt"
-
-if CONFIG["init_from"] == "scratch":
-	with open(TXT_SAVE_PATH, "w", encoding="utf-8") as f:
-		f.write("")
-
-kprint(f"```config.json\n{json.dumps(CONFIG, indent=4)}\n```", filename=TXT_SAVE_PATH, println=False)
+model_log_path = Path(CONFIG["save_path"]).with_suffix(".txt")
 
 # set device
 device = ("cuda" if torch.cuda.is_available() else "cpu") if CONFIG["device"] == "auto" else CONFIG["device"]
-
 # init seed
-torch.manual_seed(CONFIG["seed"]) if CONFIG["seed"] != "auto" else None
-random.seed(CONFIG["seed"]) if CONFIG["seed"] != "auto" else None
+if CONFIG["seed"] != "auto":
+	torch.manual_seed(CONFIG["seed"])
+	numpy.random.seed(CONFIG["seed"])
+	random.seed(CONFIG["seed"])
 
-# "float32", "bfloat16", or "float16", the latter will auto implement a GradScaler
-dtype = "bfloat16" if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else "float16"
-# note: float16 data type will automatically use a GradScaler
-ptdtype = {"float32": torch.float32, "bfloat16": torch.bfloat16, "float16": torch.float16}[dtype]
-ctx = nullcontext() if device == "cpu" else torch.amp.autocast(device_type=device, dtype=ptdtype)
+def init_model(checkpoint=None):
+	global model_log_path
+	# if model is init from scratch then create an empty model log file.
+	if checkpoint is None:
+		with open(model_log_path, "w", encoding="utf-8") as f:
+			f.write("")
 
-# print the device
-kprint("Training on", f"{Fore.YELLOW}{Style.BRIGHT}{device}", f"{Fore.WHITE}{Style.BRIGHT}({torch.initial_seed()})", filename=TXT_SAVE_PATH)
+	# print the device
+	kprint(f"```config.json\n{json.dumps(CONFIG, indent=4)}\n```", filename=model_log_path, println=False)
+	kprint("Training on", f"{Fore.YELLOW}{Style.BRIGHT}{device}", f"{Fore.WHITE}{Style.BRIGHT}({torch.initial_seed()})", filename=model_log_path)
 
-def from_scratch():
+	# load stats
+	stats = checkpoint["stats"] if checkpoint is not None and "stats" in checkpoint.keys() else {
+		"iter_num": 0,
+		"train": [],
+		"eval": [],
+		"val": [],
+		"mfu": [],
+		"lr": []
+	}
+
+	# load hyperparams
 	hyperparams = dict(dropout=CONFIG["dropout"])
 	# read off the created CONFIG params, so we can store them into checkpoint correctly
 	for k in ["n_layer", "n_head", "n_embd", "n_hidden", "use_rope", "rope_base", "block_size", "vocab_size", "beta1", "beta2"]:
@@ -50,193 +55,32 @@ def from_scratch():
 	if any([hyperparams["n_hidden"] == i for i in ["4x_embd", "auto", None]]):
 		hyperparams["n_hidden"] = hyperparams["n_embd"] * 4
 
-	gptconf = GPTConfig(**hyperparams)
 	# create an instance of GPT
-	model = GPT(gptconf)
-	model.to(device)
-
-	# optimizer
-	optimizer = model.configure_optimizers(CONFIG["weight_decay"], CONFIG["learning_rate"], CONFIG["device"])
-
-	# a dict for keep track of all the losses to be plotted.
-	metrics = {
-		"train": [],
-		"eval": [],
-		"val": [],
-		"mfu": [],
-		"lr": []
-	}
-	iter_num = 0
-	best_loss = 0
-
-	return model, optimizer, hyperparams, iter_num, best_loss, metrics
-
-def from_pretrained(checkpoint):
-	metrics = checkpoint["metrics"] if "metrics" in checkpoint.keys() else {
-		"train": [],
-		"eval": [],
-		"val": [],
-		"mfu": [],
-		"lr": []
-	}
-
-	# load the state dict and current iteration number of the model
-	iter_num = checkpoint["iter_num"] + 1
-	best_loss = checkpoint["best_loss"] if "best_loss" in checkpoint.keys() else 0
-
-	hyperparams = dict(dropout=CONFIG["dropout"])
-	# read off the created config params, so we can store them into checkpoint correctly
-	for k in ["n_layer", "n_head", "n_embd", "n_hidden", "use_rope", "rope_base", "block_size", "vocab_size", "beta1", "beta2"]:
-		hyperparams[k] = checkpoint["hyperparams"][k]
-	# automatically set `n_hidden` for feedforward network if not set already
-	if any([hyperparams["n_hidden"] == i for i in ["4x_embd", "auto", None]]):
-		hyperparams["n_hidden"] = hyperparams["n_embd"] * 4
-
 	gptconf = GPTConfig(**hyperparams)
-
-	# create an instance of GPT
 	model = GPT(gptconf)
-
 	# remove `_orig_mod.` prefix from state_dict (if it's there)
-	state_dict = checkpoint["model"]
-	unwanted_prefix = '_orig_mod.'
+	if checkpoint is not None:
+		state_dict = checkpoint["model"]
+		unwanted_prefix = '_orig_mod.'
 
-	for k, v in list(state_dict.items()):
-		if k.startswith(unwanted_prefix):
-			state_dict[k[len(unwanted_prefix):]] = state_dict.pop(k)
+		for k, v in list(state_dict.items()):
+			if k.startswith(unwanted_prefix):
+				state_dict[k[len(unwanted_prefix):]] = state_dict.pop(k)
 
-	model.load_state_dict(state_dict)
+		# load the state dict
+		model.load_state_dict(state_dict)
 	model.to(device)
 
 	# optimizer
 	optimizer = model.configure_optimizers(CONFIG["weight_decay"], CONFIG["learning_rate"], CONFIG["device"])
-	optimizer.load_state_dict(checkpoint["optimizer"])
+	optimizer.load_state_dict(checkpoint["optimizer"]) if checkpoint is not None else None
 
 	# crop down the model block size if desired, using model surgery
 	if CONFIG["block_size"] < hyperparams["block_size"]:
 		model.crop_block_size(CONFIG["block_size"])
 		hyperparams["block_size"] = CONFIG["block_size"] # so that the checkpoint will have the right value
 
-	return model, optimizer, hyperparams, iter_num, best_loss, metrics
-
-# init model and optimizer
-if CONFIG["init_from"] == "scratch":
-	model, optimizer, hyperparams, iter_num, best_loss, metrics = from_scratch()
-
-elif CONFIG["init_from"].startswith("pretrained,"):
-	model, optimizer, hyperparams, iter_num, best_loss, metrics = from_pretrained(torch.load(CONFIG["init_from"][11:]))
-
-color = f"{Fore.LIGHTGREEN_EX}{Style.BRIGHT}" if CONFIG["use_rope"] else f"{Fore.LIGHTRED_EX}{Style.BRIGHT}"
-kprint("using RoPE:", f"{color}{CONFIG["use_rope"]}", filename=TXT_SAVE_PATH)
-
-# useless stuff
-# just load all the datasets to see how much tokens are their to train the model on
-def load_dataset(path, file=None):
-	data = pandas.read_parquet(f"{path}/{file}" if file else path, engine="pyarrow")["tok"].tolist()
-	total_tokens = 0
-
-	for i in data:
-		total_tokens += len(i)
-
-	return data, total_tokens, len(data)
-
-(train_data, val_data), (train_data_len, val_data_len), (total_train_entries, total_val_entries) = (None, None), (0, 0), (0, 0)
-if CONFIG["load_from_file"]:
-	train_data, train_data_len, total_train_entries = load_dataset(CONFIG["train_data"])
-	val_data, val_data_len, total_val_entries = load_dataset(CONFIG["val_data"])
-
-else:
-	for split in ["train_data", "val_data"]:
-		for file in os.listdir(CONFIG[split]):
-			_, a, b = load_dataset(CONFIG[split], file)
-
-			if split == "train_data":
-				train_data_len += a
-				total_train_entries += b
-
-			else:
-				val_data_len += a
-				total_val_entries += b
-
-# print the number of tokens
-kprint(f"{Fore.WHITE}{Style.BRIGHT}{((train_data_len + val_data_len)/1e6)}M", "total tokens", filename=TXT_SAVE_PATH)
-kprint(
-	f"{Fore.WHITE}{Style.BRIGHT}{(total_train_entries/1e6)}M", "train entries,",
-	f"{Fore.WHITE}{Style.BRIGHT}{(total_val_entries/1e6)}M", "val entries\n"
-	f"{Fore.WHITE}{Style.BRIGHT}{(train_data_len/1e6)}M", "train tokens,",
-	f"{Fore.WHITE}{Style.BRIGHT}{(val_data_len/1e6)}M", "val tokens",
-	f"   {Fore.WHITE}{Style.DIM}(using train tokens as val tokens)" if train_data_len == val_data_len else "",
-	filename=TXT_SAVE_PATH
-)
-# these are useless vars, delete them
-del train_data_len, val_data_len, total_train_entries, total_val_entries, a, b
-
-def get_trained_model(model, optimizer):
-	return {
-		"model": model.state_dict(),
-		"optimizer": optimizer.state_dict(),
-		"hyperparams": hyperparams,
-		"device": device,
-		"metrics": metrics,
-		"iter_num": iter_num,
-		"best_loss": best_loss
-	}
-
-def _load_data(path):
-	if CONFIG["load_from_file"]:
-		return train_data if path == CONFIG["train_data"] else val_data
-
-	else:
-		files = os.listdir(path)
-		i = random.randint(0, len(files) - 1)
-		return pandas.read_parquet(f"{path}/{files[i]}", engine="pyarrow")["tok"].tolist()
-
-# data loading
-# generate a small batch of data of inputs x and targets y
-def get_batch(split):
-	# we reload data every batch to avoid a memory leak
-	path = CONFIG["train_data"] if split == "train" else CONFIG["val_data"]
-	data = _load_data(path)
-
-	# get `batch_size` number of random entries
-	ix = torch.randint(len(data), (CONFIG["batch_size"],))
-	k = {}
-
-	# get `block_size + 4` length of data for each batch
-	for i in ix:
-		k[i] = torch.tensor(data[i], dtype=torch.long)
-
-		# `CONFIG["block_size"] + 4` to ensure that `k` is always greater than block_size
-		c = 1
-		while len(k[i]) < CONFIG["block_size"]+4:
-			k[i] = torch.cat((k[i], torch.tensor(data[0], dtype=torch.long) if i+c >= len(data) else torch.tensor(data[i+c], dtype=torch.long)))
-			c += 1
-
-	# randomly select starting position
-	p = {i: random.randint(0, len(k[i]) - CONFIG["block_size"] - 1) if random.randint(0, 2) == 0 else 0 for i in k}
-
-	# prepare the train and val dataset
-	x = torch.stack([k[i][p[i] : p[i] + CONFIG["block_size"]] for i in k])
-	y = torch.stack([k[i][p[i] + 1 : p[i] + CONFIG["block_size"] + 1] for i in k])
-	x, y = x.to(device), y.to(device)
-	return x, y
-
-# helps estimate an arbitrarily accurate loss over either split using many batches
-@torch.no_grad()
-def estimate_loss(eval_iters):
-	out = {}
-	model.eval()
-	for split in ["train", "val"]:
-		losses = torch.zeros(eval_iters)
-		for k in track(range(eval_iters), description=f"{Fore.WHITE}{Style.BRIGHT}calc {Fore.WHITE}{Style.DIM}{split} loss{Style.RESET_ALL}"):
-			X, Y = get_batch(split)
-			with ctx:
-				logits, loss = model(X, Y)
-
-			losses[k] = loss.item()
-		out[split] = losses.mean()
-	model.train()
-	return out
+	return model, optimizer, hyperparams, stats
 
 # learning rate decay scheduler (cosine with warmup)
 def get_lr(it):
@@ -255,85 +99,163 @@ def get_lr(it):
     coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio)) # coeff ranges 0..1
     return CONFIG["min_lr"] + coeff * (CONFIG["learning_rate"] - CONFIG["min_lr"])
 
-# https://medium.com/biased-algorithms/a-practical-guide-to-implementing-early-stopping-in-pytorch-for-model-training-99a7cbd46e9d
-class adaptive_early_stopping:
-    def __init__(self, base_patience=5, delta=0.01):
-        self.base_patience = base_patience
-        self.delta = delta
-        self.wait_count = 0
-        self.best_score = None
-        self.dynamic_patience = self.base_patience
+# helps estimate an arbitrarily accurate loss over either split using many batches
+@torch.no_grad()
+def estimate_loss(eval_iters, model, get_batch):
+	out = {}
+	model.eval()
+	for split in ["train", "val"]:
+		losses = torch.zeros(eval_iters)
+		for k in track(range(eval_iters), description=f"{Fore.WHITE}{Style.BRIGHT}calc {Fore.WHITE}{Style.DIM}{split} loss{Style.RESET_ALL}"):
+			X, Y = get_batch(split)
+			with ctx:
+				logits, loss = model(X, Y)
 
-    def step(self, val_loss):
-        if self.best_score is None or val_loss < self.best_score - self.delta:
-            self.best_score = val_loss
-            self.wait_count = 0
-            self.dynamic_patience = self.base_patience # reset to base
+			losses[k] = loss.item()
+		out[split] = losses.mean()
+	model.train()
+	return out
 
-        else:
-            self.wait_count += 1
-            # adjust patience if improvement is near
-            if self.wait_count >= (self.base_patience * 0.8):
-                self.dynamic_patience += 1
+class dataloader:
+	def __init__(self, path, isfile=True, t_in_mem=72_000_000, reload_interval=10_000):
+		self.files = [path] if isfile else [os.path.join(path, i) for i in os.listdir(path)]
+		self.t_in_mem = t_in_mem # tokens in memory
+		self.reload_interval = reload_interval
 
-            if self.wait_count >= self.dynamic_patience:
-                return True # signal to stop training
-        return False
+		print("dataset from", f"{Fore.WHITE}{Style.DIM}`{path}`", "will reload every", f"{Fore.WHITE}{Style.BRIGHT}{reload_interval}", "steps")
+
+	def get_tok_count(self):
+		return sum([numpy.memmap(file, dtype=numpy.int16, mode="r").size for file in self.files])
+
+	def load_dataset(self):
+		self.data = []
+		for f in random.sample(self.files, k=len(self.files)):
+			# reshape data with 1024 since that is the length used in `prepare_data.py` while preparing datasets
+			data = numpy.memmap(f, dtype=numpy.int16, mode="r")
+			data = data.reshape((data.size // 1024, 1024))
+			self.data.extend(data)
+			del data
+
+			if self.t_in_mem is not None and round(sum(i.size for i in self.data) / self.t_in_mem, 3) >= 0.999:
+				self.data = numpy.array(self.data, dtype=numpy.int16)
+				ix = numpy.random.randint(self.data.size - self.t_in_mem) // 1024
+				self.data = self.data[ix : ix + (self.t_in_mem // 1024)]
+				break
+
+	def next_batch(self, it=None):
+		if it is not None and (it + 1) % self.reload_interval == 0:
+			self.load_dataset()
+
+		ix = torch.randint(self.data.shape[1] - CONFIG["block_size"], (CONFIG["batch_size"],))
+		iy = torch.randint(self.data.shape[0], (CONFIG["batch_size"],))
+
+		# create a mask where random positions of `ix` will be set to zero.
+		# sample n unique positions in [0..batch_size):
+		mask = torch.randperm(CONFIG["batch_size"])[:CONFIG["batch_size"]//2] # shape (CONFIG["batch_size"]//2,)
+		ix[mask] = 0 # set those ix entries to 0
+
+		# get x, y batches
+		x = torch.stack([torch.from_numpy((self.data[j][i : i + CONFIG["block_size"]]).astype(numpy.int64)) for i, j in zip(ix, iy)])
+		y = torch.stack([torch.from_numpy((self.data[j][i+1 : i+1 + CONFIG["block_size"]]).astype(numpy.int64)) for i, j in zip(ix, iy)])
+		x, y = x.to(device), y.to(device)
+		return x, y
+
+# init model and optimizer
+model, optimizer, hyperparams, stats = init_model(torch.load(CONFIG["init_from"][11:]) if CONFIG["init_from"].startswith("pretrained,") else None)
+color = f"{Fore.LIGHTGREEN_EX}{Style.BRIGHT}" if CONFIG["use_rope"] else f"{Fore.LIGHTRED_EX}{Style.BRIGHT}"
+kprint("using RoPE:", f"{color}{CONFIG["use_rope"]}", filename=model_log_path)
+
+# "float32", "bfloat16", or "float16", the latter will auto implement a GradScaler
+dtype = "bfloat16" if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else "float16"
+# note: float16 data type will automatically use a GradScaler
+ptdtype = {"float32": torch.float32, "bfloat16": torch.bfloat16, "float16": torch.float16}[dtype]
+ctx = nullcontext() if device == "cpu" else torch.amp.autocast(device_type=device, dtype=ptdtype)
+torch.set_float32_matmul_precision("high")
+
+# load train and val data
+train_data_loader = dataloader(CONFIG["train_data"], CONFIG["load_from_file"], reload_interval=10_000)
+val_data_loader = dataloader(CONFIG["val_data"], CONFIG["load_from_file"], reload_interval=10_000)
+train_data_loader.load_dataset()
+val_data_loader.load_dataset()
+# simple lambda function for `estimate_loss` function
+get_batch = lambda x: train_data_loader.next_batch() if x == "train" else val_data_loader.next_batch()
+
+# print the number of tokens
+num_train_toks = train_data_loader.get_tok_count()
+num_val_toks = val_data_loader.get_tok_count()
+kprint(f"{Fore.WHITE}{Style.BRIGHT}{((num_train_toks + num_val_toks)/1e6)}M", "total tokens", filename=model_log_path)
+kprint(
+	f"{Fore.WHITE}{Style.BRIGHT}{(num_train_toks/1e6)}M", "train tokens,", f"{Fore.WHITE}{Style.BRIGHT}{(num_val_toks/1e6)}M", "val tokens",
+	f"   {Fore.WHITE}{Style.DIM}(using train tokens as val tokens)" if CONFIG["train_data"] == CONFIG["val_data"] else "", filename=model_log_path
+)
+del num_train_toks, num_val_toks
 
 # report number of parameters
-kprint(f"{Fore.WHITE}{Style.BRIGHT}{model.get_num_params()/1e6}M", "parameters", filename=TXT_SAVE_PATH)
+kprint(f"{Fore.WHITE}{Style.BRIGHT}{model.get_num_params()/1e6}M", "parameters", filename=model_log_path)
 
 # initialize a GradScaler. If enabled=False scaler is a no-op
 scaler = torch.amp.GradScaler(enabled=False)
 
 if hasattr(config, "coordinate_descent_tuning"):
     config.coordinate_descent_tuning = True # suggested by @Chillee
+
 # compile the model
 if CONFIG["compile"]:
-	kprint(f"compiling the model... {Fore.WHITE}{Style.DIM}(takes a ~minute)", filename=TXT_SAVE_PATH)
+	kprint(f"compiling the model... {Fore.WHITE}{Style.DIM}(takes a ~minute)", filename=model_log_path)
 	#NOTE: backend="inductor" is giving some errors so switched to aot_eager.
 	model = torch.compile(model, backend="aot_eager") # requires PyTorch 2.0
 
 # training loop
-X, Y = get_batch("train") # fetch the very first batch
+X, Y = train_data_loader.next_batch() # fetch the very first batch
 start_time = time.time()
 eval_t0 = time.time()
 t0 = time.time()
 local_iter_num = 0 # number of iterations in the lifetime of this process
-running_mfu = -1.0 if metrics["mfu"] == [] else metrics["mfu"][-1]
+running_mfu = -1.0 if stats["mfu"] == [] else stats["mfu"][-1]
 training_loop = True
-stop_early = adaptive_early_stopping()
-training_sample = sample()
+
+# load encoder and sample constructor
+# for sampling text using training
 enc = Encoder()
 enc.load(CONFIG["encoder_path"])
+training_sample = sample()
+
+def get_trained_model(model, optimizer):
+	return {
+		"model": model.state_dict(),
+		"optimizer": optimizer.state_dict(),
+		"hyperparams": hyperparams,
+		"device": device,
+		"stats": stats
+	}
 
 while training_loop:
 	try:
 		# determine and set the learning rate for this iteration
-		lr = get_lr(iter_num) if CONFIG["decay_lr"] else CONFIG["learning_rate"]
+		lr = get_lr(stats["iter_num"]) if CONFIG["decay_lr"] else CONFIG["learning_rate"]
 		for param_group in optimizer.param_groups:
 			param_group["lr"] = lr
-		metrics["lr"].append(lr)
+		stats["lr"].append(lr)
 
 		# save checkpoint
-		if CONFIG["checkpoints"] != None and iter_num > 0 and iter_num % CONFIG["checkpoints"]["interval"] == 0:
+		if CONFIG["checkpoints"] != None and stats["iter_num"] > 0 and stats["iter_num"] % CONFIG["checkpoints"]["interval"] == 0:
 			if not os.path.isdir(CONFIG["checkpoints"]["path"]):
 				os.mkdir(CONFIG["checkpoints"]["path"])
 
-			kprint(f"saved checkpoint at step {Fore.WHITE}{Style.BRIGHT}{iter_num}", filename=TXT_SAVE_PATH)
-			torch.save(get_trained_model(model, optimizer), f"{CONFIG["checkpoints"]["path"]}/s{iter_num}.bin")
+			kprint(f"saved checkpoint at step {Fore.WHITE}{Style.BRIGHT}{stats["iter_num"]}", filename=model_log_path)
+			torch.save(get_trained_model(model, optimizer), f"{CONFIG["checkpoints"]["path"]}/s{stats["iter_num"]}.bin")
 
 		# generate some sample text
-		if CONFIG["gen_interval"] != None and iter_num > 0 and iter_num % CONFIG["gen_interval"] == 0:
+		if CONFIG["sample_interval"] != None and stats["iter_num"] > 0 and stats["iter_num"] % CONFIG["sample_interval"] == 0:
 			training_sample.load(get_trained_model(model, optimizer), True)
 
-			for _ in range(CONFIG["gen_iters"]):
-				out = enc.decode(training_sample.generate(None, length=256))
-				kprint(f"{Fore.WHITE}{Style.DIM}```s{iter_num}.bin\n{out}\n```\n", filename=TXT_SAVE_PATH)
+			for _ in range(CONFIG["sample_iters"]):
+				out = enc.decode(training_sample.generate(None, length=CONFIG["block_size"]))
+				kprint(f"{Fore.WHITE}{Style.DIM}```s{stats["iter_num"]}.bin\n{out}\n```\n", filename=model_log_path)
 
 		# evaluate the loss on train/val sets and write checkpoints
-		if iter_num > 0 and iter_num % CONFIG["eval_interval"] == 0:
-			losses = estimate_loss(CONFIG["eval_iters"])
+		if stats["iter_num"] > 0 and stats["iter_num"] % CONFIG["eval_interval"] == 0:
+			losses = estimate_loss(CONFIG["eval_iters"], model, get_batch)
 			# timing and logging
 			eval_t1 = time.time()
 			eval_dt = eval_t1 - eval_t0
@@ -341,7 +263,7 @@ while training_loop:
 
 			kprint(
 				f"{Fore.WHITE}{Style.BRIGHT}step",
-				f"{Fore.WHITE}{Style.DIM}[{iter_num}/{CONFIG["max_iters"]}]"
+				f"{Fore.WHITE}{Style.DIM}[{stats["iter_num"]}/{CONFIG["max_iters"]}]"
 				f"{Fore.RESET}{Style.RESET_ALL}:",
 				f"train loss {Fore.WHITE}{Style.BRIGHT}{losses["train"]:.4f}"
 				f"{Fore.RESET}{Style.RESET_ALL},",
@@ -350,16 +272,11 @@ while training_loop:
 				f"lr {Fore.WHITE}{Style.BRIGHT}{lr:.7f}"
 				f"{Fore.RESET}{Style.RESET_ALL},",
 				f"time took {Fore.WHITE}{Style.DIM}{calc_total_time(eval_dt)}",
-				filename=TXT_SAVE_PATH
+				filename=model_log_path
 			)
 
-			metrics["train"].append(losses["train"])
-			metrics["val"].append(losses["val"])
-
-			if stop_early.step(losses["val"]):
-				kprint(f"{Fore.RED}{Style.BRIGHT}early stopping.")
-				training_loop = False
-				break
+			stats["train"].append(losses["train"])
+			stats["val"].append(losses["val"])
 
 		# forward backward update, with optional gradient accumulation to simulate larger batch size
 		# and using the GradScaler if data type is float16
@@ -369,7 +286,7 @@ while training_loop:
 				loss = loss / CONFIG["gradient_accumulation_steps"] # scale the loss to account for gradient accumulation
 
 			# immediately async prefetch next batch while model is doing the forward pass on the GPU
-			X, Y = get_batch("train")
+			X, Y = train_data_loader.next_batch()
 			# backward pass, with gradient scaling if training in fp16
 			scaler.scale(loss).backward()
 
@@ -386,7 +303,7 @@ while training_loop:
 		optimizer.zero_grad(set_to_none=True)
 
 		# timing and logging
-		if iter_num % CONFIG["log_interval"] == 0:
+		if stats["iter_num"] % CONFIG["log_interval"] == 0:
 			t1 = time.time()
 			dt = t1 - t0
 			t0 = t1
@@ -399,58 +316,60 @@ while training_loop:
 				mfu = model.estimate_mfu(CONFIG["batch_size"] * CONFIG["gradient_accumulation_steps"] * CONFIG["log_interval"], dt) # https://github.com/karpathy/nanoGPT/pull/527/files
 				running_mfu = mfu if running_mfu == -1.0 else 0.9 * running_mfu + 0.1 * mfu
 
+			toks_per_sec = (CONFIG["batch_size"] * CONFIG["gradient_accumulation_steps"] * CONFIG["block_size"]) // dt
 			kprint(
 				f"{Fore.WHITE}{Style.BRIGHT}iter",
-				f"{Fore.WHITE}{Style.DIM}[{iter_num}/{CONFIG["max_iters"]}]"
+				f"{Fore.WHITE}{Style.DIM}[{stats["iter_num"]}/{CONFIG["max_iters"]}]"
 				f"{Fore.RESET}{Style.RESET_ALL}:",
 				f"loss {Fore.WHITE}{Style.BRIGHT}{lossf:.4f}"
 				f"{Fore.RESET}{Style.RESET_ALL},",
 				f"mfu {Fore.WHITE}{Style.BRIGHT}{running_mfu*100:.2f}"
 				f"{Fore.RESET}{Style.RESET_ALL},",
-				f"time took {Fore.WHITE}{Style.DIM}{calc_total_time(dt)}",
-				filename=TXT_SAVE_PATH
+				f"dt {Fore.WHITE}{Style.DIM}{calc_total_time(dt)}",
+				f"tok/s {Fore.WHITE}{Style.DIM}{toks_per_sec}",
+				filename=model_log_path
 			)
-			metrics["mfu"].append(running_mfu)
-			metrics["eval"].append(lossf)
+			stats["mfu"].append(running_mfu)
+			stats["eval"].append(lossf)
 
-		iter_num += 1
+		stats["iter_num"] += 1
 		local_iter_num += 1
 
 		# termination conditions
-		if iter_num > CONFIG["max_iters"]:
+		if stats["iter_num"] > CONFIG["max_iters"]:
 			break
 
 	except KeyboardInterrupt:
-		kprint("type", filename=TXT_SAVE_PATH)
-		kprint(f"{Fore.WHITE}{Style.BRIGHT}1. {Fore.WHITE}{Style.DIM}`y` {Style.RESET_ALL}to stop training.", filename=TXT_SAVE_PATH)
-		kprint(f"{Fore.WHITE}{Style.BRIGHT}2. {Fore.WHITE}{Style.DIM}`n` {Style.RESET_ALL}to continue training.", filename=TXT_SAVE_PATH)
-		kprint(f"{Fore.WHITE}{Style.BRIGHT}3. {Fore.WHITE}{Style.DIM}`s` {Style.RESET_ALL}to save model.", filename=TXT_SAVE_PATH)
-		kprint(f"{Fore.WHITE}{Style.BRIGHT}4. {Fore.WHITE}{Style.DIM}`r` {Style.RESET_ALL}to reload config.json.", filename=TXT_SAVE_PATH)
+		print("type")
+		print(f"{Fore.WHITE}{Style.BRIGHT}1. {Fore.WHITE}{Style.DIM}`y` {Style.RESET_ALL}to stop training.")
+		print(f"{Fore.WHITE}{Style.BRIGHT}2. {Fore.WHITE}{Style.DIM}`n` {Style.RESET_ALL}to continue training.")
+		print(f"{Fore.WHITE}{Style.BRIGHT}3. {Fore.WHITE}{Style.DIM}`s` {Style.RESET_ALL}to save model.")
+		print(f"{Fore.WHITE}{Style.BRIGHT}4. {Fore.WHITE}{Style.DIM}`r` {Style.RESET_ALL}to reload config.json.")
 
 		while True:
 			inp = input("> ")
 
 			if inp == "y":
-				kprint(f"{Fore.RED}{Style.BRIGHT}early stopping.", filename=TXT_SAVE_PATH)
+				print(f"{Fore.RED}{Style.BRIGHT}early stopping.")
 				training_loop = False
 				break
 
 			elif inp == "n":
-				kprint(f"{Fore.GREEN}{Style.BRIGHT}continue training.", filename=TXT_SAVE_PATH)
+				print(f"{Fore.GREEN}{Style.BRIGHT}continue training.")
 				break
 
 			elif inp == "s":
-				kprint(f"{Fore.YELLOW}{Style.BRIGHT}saving model.")
-				kprint("total time:", calc_total_time(time.time() - start_time))
+				print(f"{Fore.YELLOW}{Style.BRIGHT}saving model.")
+				print("total time:", calc_total_time(time.time() - start_time))
 				torch.save(get_trained_model(model, optimizer), CONFIG["save_path"])
 
 			elif inp == "r":
-				kprint(f"{Fore.YELLOW}{Style.BRIGHT}config.json{Style.RESET_ALL} reloaded.", filename=TXT_SAVE_PATH)
+				print(f"{Fore.YELLOW}{Style.BRIGHT}config.json{Style.RESET_ALL} reloaded.")
 				with open(CONFIG_PATH, "r", encoding="utf-8") as f:
 					CONFIG = json.load(f)
 
 			else:
-				kprint(f"{Fore.RED}{Style.DIM}Wrong option.")
+				print(f"{Fore.RED}{Style.DIM}Wrong option.")
 
-kprint("total time:", calc_total_time(time.time() - start_time), filename=TXT_SAVE_PATH)
+kprint("total time:", calc_total_time(time.time() - start_time), filename=model_log_path)
 torch.save(get_trained_model(model, optimizer), CONFIG["save_path"])

@@ -47,9 +47,7 @@ state_dicts = []
 hyperparams = None
 optimizer = None
 device = None
-metrics = None
-iter_num = None
-best_loss = None
+stats = None
 
 for i in needed_checkpoints:
 	print(f"{Fore.WHITE}{Style.BRIGHT}>", i)
@@ -58,9 +56,7 @@ for i in needed_checkpoints:
 		hyperparams = checkpoint["hyperparams"]
 		optimizer = checkpoint["optimizer"]
 		device = checkpoint["device"]
-		metrics = checkpoint["metrics"]
-		iter_num = checkpoint["iter_num"]
-		best_loss = checkpoint["best_loss"]
+		stats = checkpoint["stats"]
 
 	# remove `_orig_mod.` prefix from state_dict (if it's there)
 	state_dict = checkpoint["model"]
@@ -96,7 +92,5 @@ torch.save({
 	"optimizer": optimizer,
 	"hyperparams": hyperparams,
 	"device": device,
-	"metrics": metrics,
-	"iter_num": iter_num,
-	"best_loss": best_loss
+	"stats": stats
 }, args.o)
