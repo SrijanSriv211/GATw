@@ -315,7 +315,7 @@ while training_loop:
 				mfu = model.estimate_mfu(CONFIG["batch_size"] * CONFIG["gradient_accumulation_steps"] * CONFIG["log_interval"], dt) # https://github.com/karpathy/nanoGPT/pull/527/files
 				running_mfu = mfu if running_mfu == -1.0 else 0.9 * running_mfu + 0.1 * mfu
 
-			toks_per_sec = (CONFIG["batch_size"] * CONFIG["gradient_accumulation_steps"] * CONFIG["block_size"]) // dt
+			toks_per_sec = (CONFIG["batch_size"] * CONFIG["gradient_accumulation_steps"] * CONFIG["block_size"]) / dt
 			kprint(
 				f"{Fore.WHITE}{Style.BRIGHT}iter",
 				f"{Fore.WHITE}{Style.DIM}[{stats["iter_num"]}/{CONFIG["max_iters"]}]"
@@ -325,7 +325,7 @@ while training_loop:
 				f"mfu {Fore.WHITE}{Style.BRIGHT}{running_mfu*100:.2f}"
 				f"{Fore.RESET}{Style.RESET_ALL},",
 				f"dt {Fore.WHITE}{Style.DIM}{calc_total_time(dt)}",
-				f"tok/s {Fore.WHITE}{Style.DIM}{toks_per_sec}",
+				f"tok/s {Fore.WHITE}{Style.DIM}{toks_per_sec:.2f}",
 				filename=model_log_path
 			)
 			stats["mfu"].append(running_mfu)
