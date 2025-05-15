@@ -303,11 +303,10 @@ while training_loop:
 		optimizer.zero_grad(set_to_none=True)
 
 		# timing and logging
+		t1 = time.time()
+		dt = t1 - t0
+		t0 = t1
 		if stats["iter_num"] % CONFIG["log_interval"] == 0:
-			t1 = time.time()
-			dt = t1 - t0
-			t0 = t1
-
 			# get loss as float. note: this is a CPU-GPU sync point
 			# scale up to undo the division above, approximating the true total loss (exact would have been a sum)
 			lossf = loss.item() * CONFIG["gradient_accumulation_steps"]
