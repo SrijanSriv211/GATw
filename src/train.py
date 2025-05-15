@@ -330,6 +330,7 @@ while training_loop:
 				f"mfu {Fore.WHITE}{Style.BRIGHT}{running_mfu*100:.2f}"
 				f"{Fore.RESET}{Style.RESET_ALL},",
 				f"dt {Fore.WHITE}{Style.DIM}{calc_total_time(dt2)}",
+				f"{Fore.RESET}{Style.RESET_ALL},",
 				f"tok/s {Fore.WHITE}{Style.DIM}{toks_per_sec:.2f}",
 				filename=model_log_path
 			)
