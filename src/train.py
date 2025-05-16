@@ -142,6 +142,9 @@ class dataloader:
 				self.data = self.data[ix : ix + (self.t_in_mem // 1024)]
 				break
 
+		if isinstance(self.data, list):
+			self.data = numpy.array(self.data, dtype=numpy.int16)
+
 	def next_batch(self, it=None):
 		if it is not None and (it + 1) % self.reload_interval == 0:
 			self.load_dataset()
