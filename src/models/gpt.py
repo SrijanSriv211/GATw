@@ -358,9 +358,7 @@ class sample:
         self.model.to(self.device)
         self.model.eval() # set the model to evaluation mode
 
-        if compile:
-            #NOTE: backend="inductor" is giving some errors so switched to aot_eager.
-            self.model = torch.compile(self.model, backend="aot_eager") # requires PyTorch 2.0
+        if compile: self.model = torch.compile(self.model)
 
     # use the model for generation or other tasks
     def generate(self, encoded_text=None, length=1024, temperature=1, top_k=None):

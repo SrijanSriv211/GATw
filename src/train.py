@@ -117,15 +117,22 @@ def estimate_loss(eval_iters, model, get_batch):
 	return out
 
 class dataloader:
-	def __init__(self, path, isfile=True, t_in_mem=72_000_000, reload_interval=10_000):
+	def __init__(self, path, isfile=True, t_in_mem=72_000_000, reload=True):
+		self.path = path
 		self.files = [path] if isfile else [os.path.join(path, i) for i in os.listdir(path)]
 		self.t_in_mem = t_in_mem # tokens in memory
-		self.reload_interval = reload_interval
+		self.reload = reload
 
-		print("dataset from", f"{Fore.WHITE}{Style.DIM}`{path}`", "will reload every", f"{Fore.WHITE}{Style.BRIGHT}{reload_interval}", "steps")
-
+	# get total number of tokens
 	def get_tok_count(self):
-		return sum([numpy.memmap(file, dtype=numpy.int16, mode="r").size for file in self.files])
+		n_toks = sum([numpy.memmap(file, dtype=numpy.int16, mode="r").size for file in self.files])
+
+		# calculate when to reload the dataset
+		if self.reload and self.t_in_mem is not None:
+			self.reload_interval = round(self.t_in_mem/n_toks * CONFIG["max_iters"])
+			print("dataset from", f"{Fore.WHITE}{Style.DIM}`{self.path}`", "will reload every", f"{Fore.WHITE}{Style.BRIGHT}{self.reload_interval}", "steps")
+
+		return n_toks
 
 	def load_dataset(self):
 		self.data = []
@@ -146,7 +153,7 @@ class dataloader:
 			self.data = numpy.array(self.data, dtype=numpy.int16)
 
 	def next_batch(self, it=None):
-		if it is not None and (it + 1) % self.reload_interval == 0:
+		if self.reload and it is not None and (it + 1) % self.reload_interval == 0:
 			self.load_dataset()
 
 		ix = torch.randint(self.data.shape[1] - CONFIG["block_size"], (CONFIG["batch_size"],))
@@ -176,8 +183,8 @@ ctx = nullcontext() if device == "cpu" else torch.amp.autocast(device_type=devic
 torch.set_float32_matmul_precision("high")
 
 # load train and val data
-train_data_loader = dataloader(CONFIG["train_data"], CONFIG["load_from_file"], reload_interval=10_000)
-val_data_loader = dataloader(CONFIG["val_data"], CONFIG["load_from_file"], reload_interval=10_000)
+train_data_loader = dataloader(CONFIG["train_data"], CONFIG["load_from_file"])
+val_data_loader = dataloader(CONFIG["val_data"], CONFIG["load_from_file"])
 train_data_loader.load_dataset()
 val_data_loader.load_dataset()
 # simple lambda function for `estimate_loss` function
@@ -205,8 +212,7 @@ if hasattr(config, "coordinate_descent_tuning"):
 # compile the model
 if CONFIG["compile"]:
 	kprint(f"compiling the model... {Fore.WHITE}{Style.DIM}(takes a ~minute)", filename=model_log_path)
-	#NOTE: backend="inductor" is giving some errors so switched to aot_eager.
-	model = torch.compile(model, backend="aot_eager") # requires PyTorch 2.0
+	model = torch.compile(model) # requires PyTorch 2.0
 
 # training loop
 X, Y = train_data_loader.next_batch() # fetch the very first batch
