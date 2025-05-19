@@ -154,6 +154,7 @@ class dataloader:
 
 	def next_batch(self, it=None):
 		if self.reload and it is not None and (it + 1) % self.reload_interval == 0:
+			print("reloading dataset from", f"{Fore.WHITE}{Style.DIM}`{self.path}`")
 			self.load_dataset()
 
 		ix = torch.randint(self.data.shape[1] - CONFIG["block_size"], (CONFIG["batch_size"],))
