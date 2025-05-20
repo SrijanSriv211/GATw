@@ -122,14 +122,16 @@ class dataloader:
 		self.files = [path] if isfile else [os.path.join(path, i) for i in os.listdir(path)]
 		self.t_in_mem = t_in_mem # tokens in memory
 		self.reload = reload
+		self.reload_interval = None
 
 	# get total number of tokens
 	def get_tok_count(self):
 		n_toks = sum([numpy.memmap(file, dtype=numpy.int16, mode="r").size for file in self.files])
 
 		# calculate when to reload the dataset
-		if self.reload and self.t_in_mem is not None:
-			self.reload_interval = round(self.t_in_mem/n_toks * CONFIG["max_iters"])
+		reload_interval = round(self.t_in_mem/n_toks * CONFIG["max_iters"])
+		if self.reload and self.t_in_mem is not None and reload_interval < CONFIG["max_iters"]:
+			self.reload_interval = reload_interval
 			print("dataset from", f"{Fore.WHITE}{Style.DIM}`{self.path}`", "will reload every", f"{Fore.WHITE}{Style.BRIGHT}{self.reload_interval}", "steps")
 
 		return n_toks
@@ -153,7 +155,7 @@ class dataloader:
 			self.data = numpy.array(self.data, dtype=numpy.int16)
 
 	def next_batch(self, it=None):
-		if self.reload and it is not None and (it + 1) % self.reload_interval == 0:
+		if self.reload and self.reload_interval is not None and it is not None and (it + 1) % self.reload_interval == 0:
 			print("reloading dataset from", f"{Fore.WHITE}{Style.DIM}`{self.path}`")
 			self.load_dataset()
 
