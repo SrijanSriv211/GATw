@@ -121,8 +121,8 @@ class dataloader:
 		self.path = path
 		self.files = [path] if isfile else [os.path.join(path, i) for i in os.listdir(path)]
 		self.t_in_mem = t_in_mem # tokens in memory
-		self.reload = reload
 		self.reload_interval = None
+		self.reload = reload
 
 	# get total number of tokens
 	def get_tok_count(self):
