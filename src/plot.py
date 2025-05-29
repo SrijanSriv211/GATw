@@ -33,9 +33,9 @@ def plot(title, plot_data, save_path):
 warnings.filterwarnings("ignore", category=FutureWarning)
 
 checkpoint = torch.load(sys.argv[1])
-metrics = checkpoint["metrics"]
+stats = checkpoint["stats"]
 
-plot("eval loss", [(metrics["train"], "train loss"), (metrics["val"], "val loss")], f"res/eval.png")
-plot("log loss", [(metrics["eval"], "log loss")], f"res/log.png")
-plot("mfu", [(metrics["mfu"], "mfu")], f"res/mfu.png")
-plot("lr", [(metrics["lr"], "lr")], f"res/lr.png")
+plot("eval loss", [(stats["train"], "train loss"), (stats["val"], "val loss")], f"res/eval.png")
+plot("log loss", [(stats["eval"], "log loss")], f"res/log.png")
+plot("mfu", [(stats["mfu"], "mfu")], f"res/mfu.png")
+plot("lr", [(stats["lr"], "lr")], f"res/lr.png")
