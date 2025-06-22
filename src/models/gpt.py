@@ -294,13 +294,13 @@ class GPT(nn.Module):
         return mfu
 
     @torch.no_grad()
-    def generate(self, idx, max_new_tokens, temperature=1.0, top_k=None):
+    def generate(self, idx, max_new_tokens, temperature=1.0, top_k=None, stream=False, enc=None):
         """
         Take a conditioning sequence of indices idx (LongTensor of shape (b,t)) and complete
         the sequence max_new_tokens times, feeding the predictions back into the model each time.
         Most likely you'll want to make sure to be in model.eval() mode of operation for this.
         """
-        for _ in range(max_new_tokens):
+        for z in range(max_new_tokens):
             # if the sequence context is growing too long we must crop it at block_size
             idx_cond = idx if idx.size(1) <= self.config.block_size else idx[:, -self.config.block_size:]
             # forward the model to get the logits for the index in the sequence
@@ -323,6 +323,9 @@ class GPT(nn.Module):
                 idx_next = torch.multinomial(probs, num_samples=1)
                 # append sampled index to the running sequence and continue
                 idx = torch.cat((idx, idx_next), dim=1)
+                # live-stream output if True
+                if enc is not None and stream:
+                    print(enc.decode([idx_next[0].item()]), end="", flush=True)
         return idx
 
 # ---------------------------------------------------------------------------
@@ -337,8 +340,9 @@ class GPT(nn.Module):
 # ---------------------------------------------------------------------------
 
 class sample:
-    def __init__(self, device="auto"):
+    def __init__(self, device="auto", enc=None):
         self.device = ("cuda" if torch.cuda.is_available() else "cpu") if device == "auto" else device
+        self.enc = enc
 
     def load(self, checkpoint, compile=False):
         # create an instance of GPT
@@ -361,14 +365,17 @@ class sample:
         if compile: self.model = torch.compile(self.model)
 
     # use the model for generation or other tasks
-    def generate(self, encoded_text=None, length=1024, temperature=1, top_k=None):
+    def generate(self, encoded_text=None, length=1024, temperature=1, top_k=None, stream=False):
         """
         `max_new_tokens`: number of tokens generated in each sample
         `temperature`: 1.0 = no change, < 1.0 = less random, > 1.0 = more random, in predictions
         `tok_k`: retain only the top_k most likely tokens, clamp others to have 0 probability
         """
 
-        return self.model.generate(self.prepare_context(encoded_text), max_new_tokens=length, temperature=temperature, top_k=top_k)[0].tolist()
+        if stream and self.enc is None:
+            print("Cannot stream without any specified encoder")
+
+        return self.model.generate(self.prepare_context(encoded_text), max_new_tokens=length, temperature=temperature, top_k=top_k, stream=stream, enc=self.enc)[0].tolist()
 
     def prepare_context(self, encoded_text):
         if encoded_text == None:

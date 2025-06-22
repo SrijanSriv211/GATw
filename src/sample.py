@@ -15,11 +15,11 @@ import warnings, torch, sys
 warnings.filterwarnings("ignore", category=FutureWarning)
 init(autoreset = True)
 
-s = sample()
-s.load(torch.load(sys.argv[1]), True)
-
 enc = Encoder()
 enc.load("bin/cl4k.bin")
+
+s = sample(enc=enc)
+s.load(torch.load(sys.argv[1]), True)
 
 test = [
 	"Google ",
@@ -38,5 +38,5 @@ test = [
 
 for txt in test:
 	enctxt = enc.encode(txt, allowed_special="all") if txt != None else txt
-	out = enc.decode(s.generate(enctxt, length=256))
-	print(f"{Fore.WHITE}{Style.DIM}```\n{out}\n```\n")
+	out = enc.decode(s.generate(enctxt, length=256, stream=True))
+	# print(f"{Fore.WHITE}{Style.DIM}```\n{out}\n```\n")
