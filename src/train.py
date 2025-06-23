@@ -109,7 +109,7 @@ def estimate_loss(eval_iters, model, get_batch):
 		for k in track(range(eval_iters), description=f"{Fore.WHITE}{Style.BRIGHT}calc {Fore.WHITE}{Style.DIM}{split} loss{Style.RESET_ALL}"):
 			X, Y = get_batch(split)
 			with ctx:
-				logits, loss = model(X, Y)
+				logits, loss, _ = model(X, Y)
 
 			losses[k] = loss.item()
 		out[split] = losses.mean()
@@ -295,7 +295,7 @@ while training_loop:
 		# and using the GradScaler if data type is float16
 		for micro_step in range(CONFIG["gradient_accumulation_steps"]):
 			with ctx:
-				logits, loss = model(X, Y)
+				logits, loss, _ = model(X, Y)
 				loss = loss / CONFIG["gradient_accumulation_steps"] # scale the loss to account for gradient accumulation
 
 			# immediately async prefetch next batch while model is doing the forward pass on the GPU
