@@ -347,7 +347,7 @@ class GPT(nn.Module):
                 start_pos = idx.size(1) - 1
 
             # forward the model to get the logits for the index in the sequence
-            logits, _ = self(idx_cond, past_kv_proj=past_kv_proj, start_pos=start_pos)
+            logits, _, past_kv_proj = self(idx_cond, past_kv_proj=past_kv_proj, start_pos=start_pos)
 
             # pluck the logits at the final step and scale by desired temperature
             # https://github.com/karpathy/nanoGPT/pull/546/
