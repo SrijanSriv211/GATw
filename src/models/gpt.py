@@ -93,18 +93,17 @@ class CausalSelfAttention(nn.Module):
             q = apply_rope(q, freqs_cos, freqs_sin)
             k = apply_rope(k, freqs_cos, freqs_sin)
 
+        k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
+        q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
+        v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
+
         # if we have past KV projections, combine them with the present ones
         present_kv_proj = None
         if past_kv_proj:
             past_k_proj, past_v_proj = past_kv_proj
-            k = torch.cat((past_k_proj, k), dim=1)
-            v = torch.cat((past_v_proj, v), dim=1)
-            # return the new KV projections only if we had a past to attend to
-            present_kv_proj = (k, v)
-
-        k = k.view(B, -1, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, n_prev+1, hs)
-        q = q.view(B, -1, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, 1, hs)
-        v = v.view(B, -1, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, n_prev+1, hs)
+            k = torch.cat((past_k_proj, k), dim=2)
+            v = torch.cat((past_v_proj, v), dim=2)
+            present_kv_proj = (k, v) # return the new KV projections only if we had a past to attend to
 
         # causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
         if self.flash:
@@ -119,7 +118,7 @@ class CausalSelfAttention(nn.Module):
             att = F.softmax(att, dim=-1)
             att = self.attn_dropout(att)
             y = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
-        y = y.transpose(1, 2).contiguous().view(B, -1, C) # re-assemble all head outputs side by side
+        y = y.transpose(1, 2).contiguous().view(B, T, C) # re-assemble all head outputs side by side
 
         # output projection
         y = self.resid_dropout(self.c_proj(y))
@@ -348,10 +347,10 @@ class GPT(nn.Module):
                 idx_cond = idx if idx.size(1) <= self.config.block_size else idx[:, -self.config.block_size:]
                 start_pos = 0
 
-            # # our very first step, pass the initial sequence context to the model
-            # elif idx.size(1) == T and kv_cache:
-            #     idx_cond = idx
-            #     start_pos = 0
+            # our very first step, pass the initial sequence context to the model
+            elif idx.size(1) == T and kv_cache:
+                idx_cond = idx
+                start_pos = 0
 
             # only pass the token we just generated previously to the model
             # the previous sequence context is implicitly stored in past_kv_proj
