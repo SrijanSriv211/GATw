@@ -52,46 +52,59 @@ class CausalSelfAttention(nn.Module):
 
     def forward(self, x, past_kv_proj=None):
         B, T, C = x.size() # batch size, sequence length, embedding dimensionality (n_embd)
-        KV = T # by default, we have the same number of keys/values and queries
-
         # calculate query, key, values for all heads in batch and move head forward to be the batch dim
         q, k, v = self.c_attn(x).split(self.n_embd, dim=2)
-        k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
-        q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
-        v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
-
-        # if we have past KV projections, combine them with the present ones
-        if past_kv_proj is not None and KV <= self.block_size:
-            past_k_proj, past_v_proj = past_kv_proj
-            assert past_k_proj.size() == past_v_proj.size()
-            k = torch.cat((past_k_proj, k), dim=2)
-            v = torch.cat((past_v_proj, v), dim=2)
-            KV = k.size(2)
 
         if self.use_rope:
-            # Use precomputed theta and cast to input dtype
+            # use precomputed theta and cast to input dtype
             hs = C // self.n_head  # head dimension
             d = hs // 2  # number of dimension pairs
             theta = self.theta[:d].to(x.dtype)  # Cast to input dtype
 
-            # Compute frequencies using input dtype
+            # compute frequencies using input dtype
             t = torch.arange(T, device=x.device, dtype=x.dtype)
             freqs = torch.outer(t, theta)
-            freqs_cos = torch.cos(freqs).unsqueeze(0).unsqueeze(0)  # (1, 1, T, d)
-            freqs_sin = torch.sin(freqs).unsqueeze(0).unsqueeze(0)  # (1, 1, T, d)
+            freqs_cos = torch.cos(freqs).unsqueeze(0).unsqueeze(2)  # (1, T, 1, d)
+            freqs_sin = torch.sin(freqs).unsqueeze(0).unsqueeze(2)  # (1, T, 1, d)
 
-            # Optimized RoPE application without type casting
+            # optimized RoPE application without type casting
             def apply_rope(x, cos, sin):
-                x_ = x.reshape(*x.shape[:-1], -1, 2)  # (B, nh, T, d, 2)
-                x0 = x_[..., 0]
-                x1 = x_[..., 1]
+                B, T, C = x.shape
+                x = x.view(B, T, self.n_head, self.head_dim // 2, 2) # reshape x to (B, T, nh, d, 2)
+
+                # separate the two parts
+                x0 = x[..., 0]  # (B, T, nh, d)
+                x1 = x[..., 1]  # (B, T, nh, d)
+
+                # reshape cos and sin for broadcasting
+                cos = cos.view(1, T, 1, -1)  # (1, T, 1, d)
+                sin = sin.view(1, T, 1, -1)  # (1, T, 1, d)
+
+                # apply rotation
                 x0_rot = x0 * cos - x1 * sin
                 x1_rot = x0 * sin + x1 * cos
-                x_rot = torch.stack([x0_rot, x1_rot], dim=-1).flatten(start_dim=-2)
+
+                # stack and flatten
+                x_rot = torch.stack([x0_rot, x1_rot], dim=-1) # (B, T, nh, d, 2)
+                x_rot = x_rot.flatten(3) # (B, T, nh, d*2)
+                x_rot = x_rot.reshape(B, T, C) # (B, T, C)
                 return x_rot
 
             q = apply_rope(q, freqs_cos, freqs_sin)
             k = apply_rope(k, freqs_cos, freqs_sin)
+
+        # if we have past KV projections, combine them with the present ones
+        present_kv_proj = None
+        if past_kv_proj:
+            past_k_proj, past_v_proj = past_kv_proj
+            k = torch.cat((past_k_proj, k), dim=1)
+            v = torch.cat((past_v_proj, v), dim=1)
+            # return the new KV projections only if we had a past to attend to
+            present_kv_proj = (k, v)
+
+        k = k.view(B, -1, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, n_prev+1, hs)
+        q = q.view(B, -1, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, 1, hs)
+        v = v.view(B, -1, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, n_prev+1, hs)
 
         # causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
         if self.flash:
@@ -101,28 +114,28 @@ class CausalSelfAttention(nn.Module):
         else:
             # manual implementation of attention
             att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
-            att = att.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf'))
+            if not past_kv_proj:
+                att = att.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf'))
             att = F.softmax(att, dim=-1)
             att = self.attn_dropout(att)
             y = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
-        y = y.transpose(1, 2).contiguous().view(B, T, C) # re-assemble all head outputs side by side
+        y = y.transpose(1, 2).contiguous().view(B, -1, C) # re-assemble all head outputs side by side
 
         # output projection
         y = self.resid_dropout(self.c_proj(y))
-        # return the new KV projections only if we had a past to attend to
-        present_kv_proj = (k, v) if past_kv_proj is not None else None
         return y, present_kv_proj
 
 class MLP(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.c_fc    = nn.Linear(config.n_embd, config.n_hidden, bias=False)
+        self.gelu    = nn.GELU()
         self.c_proj  = nn.Linear(config.n_hidden, config.n_embd, bias=False)
         self.dropout = nn.Dropout(config.dropout)
 
     def forward(self, x):
         x = self.c_fc(x)
-        x = F.relu(x).square()
+        x = self.gelu(x)
         x = self.c_proj(x)
         x = self.dropout(x)
         return x
@@ -335,10 +348,10 @@ class GPT(nn.Module):
                 idx_cond = idx if idx.size(1) <= self.config.block_size else idx[:, -self.config.block_size:]
                 start_pos = 0
 
-            # our very first step, pass the initial sequence context to the model
-            elif idx.size(1) == T and kv_cache:
-                idx_cond = idx
-                start_pos = 0
+            # # our very first step, pass the initial sequence context to the model
+            # elif idx.size(1) == T and kv_cache:
+            #     idx_cond = idx
+            #     start_pos = 0
 
             # only pass the token we just generated previously to the model
             # the previous sequence context is implicitly stored in past_kv_proj
@@ -411,7 +424,7 @@ class sample:
         if compile: self.model = torch.compile(self.model)
 
     # use the model for generation or other tasks
-    def generate(self, encoded_text=None, length=1024, temperature=1, top_k=None, stream=False):
+    def generate(self, encoded_text=None, length=1024, temperature=1, top_k=None, stream=False, kv_cache=True):
         """
         `max_new_tokens`: number of tokens generated in each sample
         `temperature`: 1.0 = no change, < 1.0 = less random, > 1.0 = more random, in predictions
@@ -421,7 +434,7 @@ class sample:
         if stream and self.enc is None:
             print("Cannot stream without any specified encoder")
 
-        return self.model.generate(self.prepare_context(encoded_text), max_new_tokens=length, temperature=temperature, top_k=top_k, stream=stream, enc=self.enc)[0].tolist()
+        return self.model.generate(self.prepare_context(encoded_text), max_new_tokens=length, temperature=temperature, top_k=top_k, stream=stream, enc=self.enc, kv_cache=kv_cache)[0].tolist()
 
     def prepare_context(self, encoded_text):
         if encoded_text == None:
