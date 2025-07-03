@@ -114,7 +114,8 @@ for file in dataset_files:
 	print(f"{(num_chars/1e6)}M total chars,", f"{unique_chars} unique chars")
 
 	# split train and val data
-	val_data = split_data(train_data)
+	if CONFIG["data_division"] < 1:
+		val_data = split_data(train_data)
 
 	# encode and post-process train data
 	num_train_chars = encode_data(train_data, "train")
@@ -124,17 +125,18 @@ for file in dataset_files:
 	del train_data
 
 	# encode and post-process val data
-	num_val_chars = encode_data(val_data, "val")
-	val_data = list(post_process_data(val_data, CONFIG["block_size"]))
-	num_val_tokens = lensum(val_data)
-	save_data(val_data, "val", file)
-	del val_data
+	if CONFIG["data_division"] < 1:
+		num_val_chars = encode_data(val_data, "val")
+		val_data = list(post_process_data(val_data, CONFIG["block_size"]))
+		num_val_tokens = lensum(val_data)
+		save_data(val_data, "val", file)
+		del val_data
 	print()
 
 	total_train_chars += num_train_chars
 	total_train_tokens += num_train_tokens
-	total_val_chars += num_val_chars
-	total_val_tokens += num_val_tokens
+	total_val_chars += num_val_chars if CONFIG["data_division"] < 1 else num_train_chars
+	total_val_tokens += num_val_tokens if CONFIG["data_division"] < 1 else num_train_tokens
 
 print(f"{(total_chars/1e6)}M total chars,", f"{total_unique_chars} total unique chars")
 print(f"{(total_train_chars/1e6)}M total train chars" + f", {(total_val_chars/1e6)}M total val chars")
