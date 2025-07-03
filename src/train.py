@@ -49,7 +49,7 @@ def init_model(checkpoint=None):
 	# load hyperparams
 	hyperparams = dict(dropout=CONFIG["dropout"])
 	# read off the created CONFIG params, so we can store them into checkpoint correctly
-	for k in ["n_layer", "n_head", "n_embd", "n_hidden", "use_rope", "rope_base", "block_size", "vocab_size", "beta1", "beta2"]:
+	for k in ["n_layer", "n_head", "n_embd", "n_hidden", "block_size", "vocab_size", "beta1", "beta2"]:
 		hyperparams[k] = CONFIG[k]
 	# automatically set `n_hidden` for feedforward network if not set already
 	if any([hyperparams["n_hidden"] == i for i in ["4x_embd", "auto", None]]):
@@ -109,7 +109,7 @@ def estimate_loss(eval_iters, model, get_batch):
 		for k in track(range(eval_iters), description=f"{Fore.WHITE}{Style.BRIGHT}calc {Fore.WHITE}{Style.DIM}{split} loss{Style.RESET_ALL}"):
 			X, Y = get_batch(split)
 			with ctx:
-				logits, loss, _ = model(X, Y)
+				logits, loss = model(X, Y)
 
 			losses[k] = loss.item()
 		out[split] = losses.mean()
@@ -175,8 +175,7 @@ class dataloader:
 
 # init model and optimizer
 model, optimizer, hyperparams, stats = init_model(torch.load(CONFIG["init_from"][11:]) if CONFIG["init_from"].startswith("pretrained,") else None)
-color = f"{Fore.LIGHTGREEN_EX}{Style.BRIGHT}" if CONFIG["use_rope"] else f"{Fore.LIGHTRED_EX}{Style.BRIGHT}"
-kprint("using RoPE:", f"{color}{CONFIG["use_rope"]}", filename=model_log_path)
+kprint("using RoPE:", f"{Fore.LIGHTGREEN_EX}{Style.BRIGHT}True", filename=model_log_path)
 
 # "float32", "bfloat16", or "float16", the latter will auto implement a GradScaler
 dtype = "bfloat16" if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else "float16"
@@ -295,7 +294,7 @@ while training_loop:
 		# and using the GradScaler if data type is float16
 		for micro_step in range(CONFIG["gradient_accumulation_steps"]):
 			with ctx:
-				logits, loss, _ = model(X, Y)
+				logits, loss = model(X, Y)
 				loss = loss / CONFIG["gradient_accumulation_steps"] # scale the loss to account for gradient accumulation
 
 			# immediately async prefetch next batch while model is doing the forward pass on the GPU
