@@ -5,15 +5,27 @@ import torch.nn as nn, torch, inspect, math
 
 init(autoreset=True)
 
-class LayerNorm(nn.Module):
-    """LayerNorm but with an optional bias. PyTorch doesn't support simply bias=False"""
-    def __init__(self, ndim, bias):
-        super().__init__()
-        self.weight = nn.Parameter(torch.ones(ndim))
-        self.bias = nn.Parameter(torch.zeros(ndim)) if bias else None
+def norm(x):
+    return F.rms_norm(x, (x.size(-1),))
 
-    def forward(self, input):
-        return F.layer_norm(input, self.weight.shape, self.weight, self.bias, 1e-5)
+class Rotary(nn.Module):
+    def __init__(self, dim: int, max_seq_len: int):
+        super().__init__()
+        # half-truncate RoPE by @YouJiacheng (w/ base freq tuning)
+        angular_freq = (1 / 1024) ** torch.linspace(0, 1, steps=dim//4, dtype=torch.float32)
+        angular_freq = torch.cat([angular_freq, angular_freq.new_zeros(dim//4)])
+        t = torch.arange(max_seq_len, dtype=torch.float32)
+        theta = torch.einsum("i,j -> ij", t, angular_freq)
+        self.cos = nn.Buffer(theta.cos(), persistent=False)
+        self.sin = nn.Buffer(theta.sin(), persistent=False)
+
+    def forward(self, x_BTHD):
+        assert self.cos.size(0) >= x_BTHD.size(-3)
+        cos, sin = self.cos[None, :x_BTHD.size(-3), None, :], self.sin[None, :x_BTHD.size(-3), None, :]
+        x1, x2 = x_BTHD.to(dtype=torch.float32).chunk(2, dim=-1)
+        y1 = x1 * cos + x2 * sin
+        y2 = x1 * (-sin) + x2 * cos
+        return torch.cat((y1, y2), 3).type_as(x_BTHD)
 
 class CausalSelfAttention(nn.Module):
     def __init__(self, config):
@@ -21,6 +33,9 @@ class CausalSelfAttention(nn.Module):
         assert config.n_embd % config.n_head == 0
         self.head_dim = config.n_embd // config.n_head
         self.block_size = config.block_size
+
+        # rope
+        self.rotary = Rotary(self.head_dim, self.block_size)
 
         # key, query, value projections for all heads, but in a batch
         self.c_attn = nn.Linear(config.n_embd, 3 * config.n_embd, bias=False)
@@ -34,107 +49,36 @@ class CausalSelfAttention(nn.Module):
         self.n_head = config.n_head
         self.n_embd = config.n_embd
         self.dropout = config.dropout
-        self.use_rope = config.use_rope
-        self.rope_base = config.rope_base
 
-        # flash attention make GPU go brrrrr but support is only in PyTorch >= 2.0
-        self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
-        if not self.flash:
-            print(f"{Fore.RED}{Style.BRIGHT}WARNING: {Fore.WHITE}{Style.DIM}using slow attention. Flash Attention requires PyTorch >= 2.0")
-            # causal mask to ensure that attention is only applied to the left in the input sequence
-            self.register_buffer("bias", torch.tril(torch.ones(self.block_size, self.block_size)).view(1, 1, self.block_size, self.block_size))
-
-        # https://github.com/karpathy/nanoGPT/pull/590/files
-        if self.use_rope:
-            hs = self.n_embd // self.n_head
-            d = hs // 2
-            self.register_buffer('theta', 1.0 / (self.rope_base ** (2 * torch.arange(0, d, dtype=torch.float32) / hs)))
-
-    def forward(self, x, past_kv_proj=None):
+    def forward(self, x):
         B, T, C = x.size() # batch size, sequence length, embedding dimensionality (n_embd)
         # calculate query, key, values for all heads in batch and move head forward to be the batch dim
         q, k, v = self.c_attn(x).split(self.n_embd, dim=2)
-
-        if self.use_rope:
-            # use precomputed theta and cast to input dtype
-            hs = C // self.n_head  # head dimension
-            d = hs // 2  # number of dimension pairs
-            theta = self.theta[:d].to(x.dtype)  # Cast to input dtype
-
-            # compute frequencies using input dtype
-            t = torch.arange(T, device=x.device, dtype=x.dtype)
-            freqs = torch.outer(t, theta)
-            freqs_cos = torch.cos(freqs).unsqueeze(0).unsqueeze(2)  # (1, T, 1, d)
-            freqs_sin = torch.sin(freqs).unsqueeze(0).unsqueeze(2)  # (1, T, 1, d)
-
-            # optimized RoPE application without type casting
-            def apply_rope(x, cos, sin):
-                B, T, C = x.shape
-                x = x.view(B, T, self.n_head, self.head_dim // 2, 2) # reshape x to (B, T, nh, d, 2)
-
-                # separate the two parts
-                x0 = x[..., 0]  # (B, T, nh, d)
-                x1 = x[..., 1]  # (B, T, nh, d)
-
-                # reshape cos and sin for broadcasting
-                cos = cos.view(1, T, 1, -1)  # (1, T, 1, d)
-                sin = sin.view(1, T, 1, -1)  # (1, T, 1, d)
-
-                # apply rotation
-                x0_rot = x0 * cos - x1 * sin
-                x1_rot = x0 * sin + x1 * cos
-
-                # stack and flatten
-                x_rot = torch.stack([x0_rot, x1_rot], dim=-1) # (B, T, nh, d, 2)
-                x_rot = x_rot.flatten(3) # (B, T, nh, d*2)
-                x_rot = x_rot.reshape(B, T, C) # (B, T, C)
-                return x_rot
-
-            q = apply_rope(q, freqs_cos, freqs_sin)
-            k = apply_rope(k, freqs_cos, freqs_sin)
-
         k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
         q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
         v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
-
-        # if we have past KV projections, combine them with the present ones
-        present_kv_proj = None
-        if past_kv_proj:
-            past_k_proj, past_v_proj = past_kv_proj
-            k = torch.cat((past_k_proj, k), dim=2)
-            v = torch.cat((past_v_proj, v), dim=2)
-            present_kv_proj = (k, v) # return the new KV projections only if we had a past to attend to
+        q, k = norm(q), norm(k) # QK norm
+        q, k = self.rotary(q), self.rotary(k)
 
         # causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
-        if self.flash:
-            # efficient attention using Flash Attention CUDA kernels
-            y = torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask=None, dropout_p=self.dropout if self.training else 0, is_causal=True)
-
-        else:
-            # manual implementation of attention
-            att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
-            if not past_kv_proj:
-                att = att.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf'))
-            att = F.softmax(att, dim=-1)
-            att = self.attn_dropout(att)
-            y = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
-        y = y.transpose(1, 2).contiguous().view(B, T, C) # re-assemble all head outputs side by side
-
+        # efficient attention using Flash Attention CUDA kernels
+        y = torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask=None, dropout_p=self.dropout if self.training else 0, is_causal=True)
+        # re-assemble all head outputs side by side
+        y = y.transpose(1, 2).contiguous().view(B, T, C)
         # output projection
         y = self.resid_dropout(self.c_proj(y))
-        return y, present_kv_proj
+        return y
 
 class MLP(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.c_fc    = nn.Linear(config.n_embd, config.n_hidden, bias=False)
-        self.gelu    = nn.GELU()
         self.c_proj  = nn.Linear(config.n_hidden, config.n_embd, bias=False)
         self.dropout = nn.Dropout(config.dropout)
 
     def forward(self, x):
         x = self.c_fc(x)
-        x = self.gelu(x)
+        x = F.relu(x).square()
         x = self.c_proj(x)
         x = self.dropout(x)
         return x
@@ -142,16 +86,16 @@ class MLP(nn.Module):
 class Block(nn.Module):
     def __init__(self, config):
         super().__init__()
-        self.ln_1 = LayerNorm(config.n_embd, bias=False)
+        # self.ln_1 = LayerNorm(config.n_embd, bias=False)
         self.attn = CausalSelfAttention(config)
-        self.ln_2 = LayerNorm(config.n_embd, bias=False)
+        # self.ln_2 = LayerNorm(config.n_embd, bias=False)
         self.mlp = MLP(config)
 
-    def forward(self, x, past_kv_proj=None):
-        attn_res, present_kv_proj = self.attn(self.ln_1(x), past_kv_proj)
+    def forward(self, x):
+        attn_res = self.attn(norm(x))
         x = x + attn_res
-        x = x + self.mlp(self.ln_2(x))
-        return x, present_kv_proj
+        x = x + self.mlp(norm(x))
+        return x
 
 @dataclass
 class GPTConfig:
@@ -174,14 +118,13 @@ class GPT(nn.Module):
         assert config.vocab_size is not None
         assert config.block_size is not None
         self.config = config
-        self.use_rope = config.use_rope
 
         self.transformer = nn.ModuleDict(dict(
             wte = nn.Embedding(config.vocab_size, config.n_embd),
-            wpe = None if self.use_rope else nn.Embedding(config.block_size, config.n_embd),
+            wpe = nn.Embedding(config.block_size, config.n_embd),
             drop = nn.Dropout(config.dropout),
             h = nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
-            ln_f = LayerNorm(config.n_embd, bias=False),
+            # ln_f = LayerNorm(config.n_embd, bias=False),
         ))
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
 
@@ -198,38 +141,21 @@ class GPT(nn.Module):
             if pn.endswith('c_proj.weight'):
                 torch.nn.init.normal_(p, mean=0.0, std=0.02/math.sqrt(2 * config.n_layer))
 
-    def forward(self, idx, targets=None, past_kv_proj=None, start_pos=0):
+    def forward(self, idx, targets=None):
         device = idx.device
         b, t = idx.size()
         assert t <= self.config.block_size, f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
-        pos = torch.arange(start_pos, start_pos + t, dtype=torch.long, device=device) # shape (t)
+        pos = torch.arange(0, t, dtype=torch.long, device=device) # shape (t)
 
         # forward the GPT model itself
         tok_emb = self.transformer.wte(idx) # token embeddings of shape (b, t, n_embd)
-        if self.use_rope:
-            x = self.transformer.drop(tok_emb)
+        pos_emb = self.transformer.wpe(pos) # position embeddings of shape (t, n_embd)
+        x = self.transformer.drop(tok_emb + pos_emb)
 
-        else:
-            pos_emb = self.transformer.wpe(pos) # position embeddings of shape (t, n_embd)
-            x = self.transformer.drop(tok_emb + pos_emb)
-
-        # we have past KV projections, so this is inference
-        if past_kv_proj is not None:
-            assert targets is None
-            # collect the new KV projections for every layer to return them at the end
-            present_kv_proj = []
-            for i, block in enumerate(self.transformer.h):
-                x, layer_kv_proj = block(x, past_kv_proj[i])
-                present_kv_proj.append(layer_kv_proj)
-
-        # we have no past, so this is training
-        # ignore the new KV projections completely
-        else:
-            present_kv_proj = None
-            for block in self.transformer.h:
-                x, _ = block(x, None)
-
-        x = self.transformer.ln_f(x)
+        for block in self.transformer.h:
+            x = block(x)
+        # x = self.transformer.ln_f(x)
+        x = norm(x)
 
         if targets is not None:
             # if we are given some desired targets also calculate the loss
@@ -241,7 +167,7 @@ class GPT(nn.Module):
             logits = self.lm_head(x[:, [-1], :]) # note: using list [-1] to preserve the time dim
             loss = None
 
-        return logits, loss, present_kv_proj
+        return logits, loss
 
     def get_num_params(self, non_embedding=True):
         """
@@ -251,7 +177,7 @@ class GPT(nn.Module):
         params are actually used as weights in the final layer, so we include them.
         """
         n_params = sum(p.numel() for p in self.parameters())
-        if non_embedding and not self.use_rope:
+        if non_embedding:
             n_params -= self.transformer.wpe.weight.numel()
         return n_params
 
@@ -332,34 +258,18 @@ class GPT(nn.Module):
         return mfu
 
     @torch.no_grad()
-    def generate(self, idx, max_new_tokens, temperature=1.0, top_k=None, stream=False, enc=None, kv_cache=True):
+    def generate(self, idx, max_new_tokens, temperature=1.0, top_k=None, stream=None):
         """
         Take a conditioning sequence of indices idx (LongTensor of shape (b,t)) and complete
         the sequence max_new_tokens times, feeding the predictions back into the model each time.
         Most likely you'll want to make sure to be in model.eval() mode of operation for this.
         """
-        B, T = idx.size()
-        empty_history = lambda: torch.empty(B, self.config.n_head, 0, self.config.n_embd // self.config.n_head, device=idx.device)
-        past_kv_proj = [(empty_history(), empty_history()) for _ in range(self.config.n_layer)] if kv_cache else None
         for _ in range(max_new_tokens):
-            if not kv_cache:
-                # if the sequence context is growing too long we must crop it at block_size
-                idx_cond = idx if idx.size(1) <= self.config.block_size else idx[:, -self.config.block_size:]
-                start_pos = 0
-
             # our very first step, pass the initial sequence context to the model
-            elif idx.size(1) == T and kv_cache:
-                idx_cond = idx
-                start_pos = 0
-
-            # only pass the token we just generated previously to the model
-            # the previous sequence context is implicitly stored in past_kv_proj
-            elif kv_cache:
-                idx_cond = idx[:, [-1]]
-                start_pos = idx.size(1) - 1
-
+            # if the sequence context is growing too long we must crop it at block_size
+            idx_cond = idx if idx.size(1) <= self.config.block_size else idx[:, -self.config.block_size:]
             # forward the model to get the logits for the index in the sequence
-            logits, _, past_kv_proj = self(idx_cond, past_kv_proj=past_kv_proj, start_pos=start_pos)
+            logits, _ = self(idx_cond)
 
             # pluck the logits at the final step and scale by desired temperature
             # https://github.com/karpathy/nanoGPT/pull/546/
@@ -380,9 +290,9 @@ class GPT(nn.Module):
                 # append sampled index to the running sequence and continue
                 idx = torch.cat((idx, idx_next), dim=1)
                 # live-stream output if True
-                if enc is not None and stream:
-                    print(enc.decode([idx_next[0].item()]), end="", flush=True)
-        if enc is not None and stream:
+                if stream is not None:
+                    print(stream.decode([idx_next[0].item()]), end="", flush=True)
+        if stream is not None:
             print()
         return idx
 
@@ -423,17 +333,17 @@ class sample:
         if compile: self.model = torch.compile(self.model)
 
     # use the model for generation or other tasks
-    def generate(self, encoded_text=None, length=1024, temperature=1, top_k=None, stream=False, kv_cache=True):
+    def generate(self, encoded_text=None, length=1024, temperature=1, top_k=None, stream=False):
         """
         `max_new_tokens`: number of tokens generated in each sample
         `temperature`: 1.0 = no change, < 1.0 = less random, > 1.0 = more random, in predictions
         `tok_k`: retain only the top_k most likely tokens, clamp others to have 0 probability
         """
-
         if stream and self.enc is None:
             print("Cannot stream without any specified encoder")
-
-        return self.model.generate(self.prepare_context(encoded_text), max_new_tokens=length, temperature=temperature, top_k=top_k, stream=stream, enc=self.enc, kv_cache=kv_cache)[0].tolist()
+            return None
+        encoder = self.enc if stream else None
+        return self.model.generate(self.prepare_context(encoded_text), max_new_tokens=length, temperature=temperature, top_k=top_k, stream=encoder)[0].tolist()
 
     def prepare_context(self, encoded_text):
         if encoded_text == None:
