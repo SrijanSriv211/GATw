@@ -16,29 +16,18 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 init(autoreset = True)
 
 enc = Encoder()
-enc.load("bin/cl4k.bin")
+enc.load("bin/cl8k.bin")
 
 s = sample(enc=enc)
 s.load(torch.load(sys.argv[1]), True)
 
 test = [
-	"Google ",
-	"Shah Rukh Khan ",
-	"Hello I'm a language model, and ",
-	"Once upon a time",
-	"Can I say that Calcia is really a branch of math or is it something nonsense",
-	"Every year the moon is going",
-	"o/ The workings of the Undetailed",
-	"Hi!\n<|sot|>",
-	"Hello buddy.\n<|sot|>",
-	None,
-	None,
-	None
+	"Google",
+	"Shah Rukh Khan",
+	"Hello"
 ]
 
 for txt in test:
 	enctxt = enc.encode(txt, allowed_special="all") if txt != None else txt
-	out = enc.decode(s.generate(enctxt, length=256, stream=True))
-	print("-"*100)
-	# print(f"{Fore.WHITE}{Style.DIM}```\n{out}\n```\n")
-	# print("\n\n" + "-"*150 + "\n\n")
+	out = enc.decode(s.generate(enctxt, length=256, temperature=0.8))
+	print(f"{Fore.WHITE}{Style.DIM}```\n{out}\n```\n")
