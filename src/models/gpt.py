@@ -36,10 +36,8 @@ class CausalSelfAttention(nn.Module):
 
         # rope
         self.rotary = Rotary(self.head_dim, self.block_size)
-
         # key, query, value projections for all heads, but in a batch
         self.c_attn = nn.Linear(config.n_embd, 3 * config.n_embd, bias=False)
-
         # output projection
         self.c_proj = nn.Linear(config.n_embd, config.n_embd, bias=False)
 
@@ -69,7 +67,7 @@ class CausalSelfAttention(nn.Module):
         y = self.resid_dropout(self.c_proj(y))
         return y
 
-class MLP(nn.Module):
+class FeedForward(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.c_fc    = nn.Linear(config.n_embd, config.n_hidden, bias=False)
@@ -86,15 +84,13 @@ class MLP(nn.Module):
 class Block(nn.Module):
     def __init__(self, config):
         super().__init__()
-        # self.ln_1 = LayerNorm(config.n_embd, bias=False)
         self.attn = CausalSelfAttention(config)
-        # self.ln_2 = LayerNorm(config.n_embd, bias=False)
-        self.mlp = MLP(config)
+        self.fnn = FeedForward(config)
 
     def forward(self, x):
         attn_res = self.attn(norm(x))
         x = x + attn_res
-        x = x + self.mlp(norm(x))
+        x = x + self.fnn(norm(x))
         return x
 
 @dataclass
@@ -124,7 +120,6 @@ class GPT(nn.Module):
             wpe = nn.Embedding(config.block_size, config.n_embd),
             drop = nn.Dropout(config.dropout),
             h = nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
-            # ln_f = LayerNorm(config.n_embd, bias=False),
         ))
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
 
@@ -154,16 +149,15 @@ class GPT(nn.Module):
 
         for block in self.transformer.h:
             x = block(x)
-        # x = self.transformer.ln_f(x)
         x = norm(x)
 
+        # if we are given some desired targets also calculate the loss
         if targets is not None:
-            # if we are given some desired targets also calculate the loss
             logits = self.lm_head(x)
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
 
+        # inference-time mini-optimization: only forward the lm_head on the very last position
         else:
-            # inference-time mini-optimization: only forward the lm_head on the very last position
             logits = self.lm_head(x[:, [-1], :]) # note: using list [-1] to preserve the time dim
             loss = None
 
