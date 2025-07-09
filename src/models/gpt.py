@@ -2,11 +2,36 @@ from colorama import Style, Fore, init
 from torch.nn import functional as F
 from dataclasses import dataclass
 import torch.nn as nn, torch, inspect, math
+torch._inductor.config.coordinate_descent_tuning = True
+torch._dynamo.config.compiled_autograd = True
 
 init(autoreset=True)
 
 def norm(x):
     return F.rms_norm(x, (x.size(-1),))
+
+class Linear(nn.Module):
+    def __init__(self, in_features, out_features, device=None, dtype=None):
+        super().__init__()
+        factory_kwargs = {"device": device, "dtype": dtype}
+        self.in_features = in_features
+        self.out_features = out_features
+        self.weight = nn.Parameter(self.init_linear(
+            torch.empty((out_features, in_features), **factory_kwargs)
+        ))
+
+    @torch.no_grad()
+    def init_linear(self, w: torch.Tensor):
+        std = 0.5 * (w.size(-1) ** -0.5) # 0.5 is a bit better than the default 1/sqrt(3)
+        bound = (3 ** 0.5) * std
+        return w.uniform_(-bound, bound)
+
+    def weight_quant(self, w: torch.Tensor):
+        scale = 1.0 / w.abs().mean().clamp(min=1e-5) #beta
+        return (w * scale).round().clamp(-1, 1) / scale
+
+    def forward(self, x):
+        return F.linear(x, self.weight_quant(self.weight))
 
 class Rotary(nn.Module):
     def __init__(self, dim: int, max_seq_len: int):
@@ -33,20 +58,20 @@ class CausalSelfAttention(nn.Module):
         assert config.n_embd % config.n_head == 0
         self.head_dim = config.n_embd // config.n_head
         self.block_size = config.block_size
+        self.n_head = config.n_head
+        self.n_embd = config.n_embd
+        self.dropout = config.dropout
 
-        # rope
+        # merged QKV weights
+        self.c_attn = Linear(config.n_embd, 3 * config.n_embd)
         self.rotary = Rotary(self.head_dim, self.block_size)
-        # key, query, value projections for all heads, but in a batch
-        self.c_attn = nn.Linear(config.n_embd, 3 * config.n_embd, bias=False)
-        # output projection
-        self.c_proj = nn.Linear(config.n_embd, config.n_embd, bias=False)
+
+        self.c_proj = Linear(config.n_embd, config.n_embd)
+        self.c_proj.weight.detach().zero_() # out zero init suggested by @Grad62304977
 
         # regularization
         self.attn_dropout = nn.Dropout(config.dropout)
         self.resid_dropout = nn.Dropout(config.dropout)
-        self.n_head = config.n_head
-        self.n_embd = config.n_embd
-        self.dropout = config.dropout
 
     def forward(self, x):
         B, T, C = x.size() # batch size, sequence length, embedding dimensionality (n_embd)
@@ -55,12 +80,14 @@ class CausalSelfAttention(nn.Module):
         k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
         q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
         v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
-        q, k = norm(q), norm(k) # QK norm
+        q, k, v = norm(q), norm(k), norm(v) # QK norm
         q, k = self.rotary(q), self.rotary(k)
 
         # causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
         # efficient attention using Flash Attention CUDA kernels
-        y = torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask=None, dropout_p=self.dropout if self.training else 0, is_causal=True)
+        # scale the attention logits by given constant (0.12), instead of the default head_dim**-0.5, by @leloykun
+        # inspired by learnable scalars used by @brendanh0gan https://x.com/hi_tysam/status/1879693583898591283
+        y = torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask=None, dropout_p=self.dropout if self.training else 0, is_causal=True, scale=0.12)
         # re-assemble all head outputs side by side
         y = y.transpose(1, 2).contiguous().view(B, T, C)
         # output projection
@@ -70,12 +97,18 @@ class CausalSelfAttention(nn.Module):
 class FeedForward(nn.Module):
     def __init__(self, config):
         super().__init__()
-        self.c_fc    = nn.Linear(config.n_embd, config.n_hidden, bias=False)
-        self.c_proj  = nn.Linear(config.n_hidden, config.n_embd, bias=False)
+        self.c_fc_1 = Linear(config.n_embd, config.n_hidden)
+        self.c_fc_2 = Linear(config.n_hidden, config.n_hidden)
+        self.c_proj = Linear(config.n_hidden, config.n_embd)
         self.dropout = nn.Dropout(config.dropout)
+        self.c_fc_1.weight.wd_mul = 2.0
+        self.c_fc_2.weight.wd_mul = 2.0
+        self.c_proj.weight.wd_mul = 2.0
 
     def forward(self, x):
-        x = self.c_fc(x)
+        x = self.c_fc_1(x)
+        x = F.relu(x).square()
+        x = self.c_fc_2(x)
         x = F.relu(x).square()
         x = self.c_proj(x)
         x = self.dropout(x)
@@ -84,13 +117,12 @@ class FeedForward(nn.Module):
 class Block(nn.Module):
     def __init__(self, config):
         super().__init__()
-        self.attn = CausalSelfAttention(config)
+        self.attn_1 = CausalSelfAttention(config)
+        self.attn_2 = CausalSelfAttention(config)
         self.fnn = FeedForward(config)
 
     def forward(self, x):
-        attn_res = self.attn(norm(x))
-        x = x + attn_res
-        x = x + self.fnn(norm(x))
+        x = x + self.fnn(norm(x)) + self.attn_1(norm(x + self.attn_2(norm(x))))
         return x
 
 @dataclass
@@ -104,9 +136,6 @@ class GPTConfig:
     beta1: float = 0.9
     beta2: float = 0.95
     dropout: float = 0.0
-    use_rope: bool = False
-    rope_base: float = 10000.0
-    bias: bool = False # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
 
 class GPT(nn.Module):
     def __init__(self, config):
@@ -121,7 +150,7 @@ class GPT(nn.Module):
             drop = nn.Dropout(config.dropout),
             h = nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
         ))
-        self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
+        self.lm_head = Linear(config.n_embd, config.vocab_size)
 
         # with weight tying when using torch.compile() some warnings get generated:
         # "UserWarning: functional_call was passed multiple values for tied weights.
