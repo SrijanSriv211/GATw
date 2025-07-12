@@ -26,12 +26,18 @@ class Linear(nn.Module):
         bound = (3 ** 0.5) * std
         return w.uniform_(-bound, bound)
 
-    def weight_quant(self, w: torch.Tensor):
+    def activation_norm_quant(self, x):
+        scale = 127.0 / x.abs().max(dim=-1, keepdim=True).values.clamp(min=1e-5) #gamma
+        return (x * scale).round().clamp(-128, 127) / scale
+
+    def weight_quant(self, w):
         scale = 1.0 / w.abs().mean().clamp(min=1e-5) #beta
         return (w * scale).round().clamp(-1, 1) / scale
 
     def forward(self, x):
-        return F.linear(x, self.weight_quant(self.weight))
+        x = norm(x) + (self.activation_norm_quant(norm(x)) - norm(x)).detach()
+        w = self.weight + (self.weight_quant(self.weight) - self.weight).detach()
+        return F.linear(x, w)
 
 class Rotary(nn.Module):
     def __init__(self, dim: int, max_seq_len: int):
@@ -122,7 +128,7 @@ class Block(nn.Module):
         self.fnn = FeedForward(config)
 
     def forward(self, x):
-        x = x + self.fnn(norm(x)) + self.attn_1(norm(x + self.attn_2(norm(x))))
+        x = x + self.fnn(norm(x)) + self.attn_1(norm(x)) + self.attn_2(norm(x))
         return x
 
 @dataclass
